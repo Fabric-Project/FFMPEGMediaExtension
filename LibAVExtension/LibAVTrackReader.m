@@ -48,7 +48,12 @@
     NSLog(@"LibAVTrackReader generateSampleCursorAtFirstSampleInDecodeOrderWithCompletionHandler");
     
     LibAVSampleCursor* sampleCursor = [[LibAVSampleCursor alloc] initWithTrackReader:self pts:kCMTimeZero];
-    
+    if (sampleCursor == nil)
+    {
+        completionHandler(nil, [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorInternalFailure userInfo:nil]);
+        return;
+    }
+
     completionHandler(sampleCursor, nil);
 }
 
@@ -57,7 +62,12 @@
     NSLog(@"LibAVTrackReader generateSampleCursorAtLastSampleInDecodeOrderWithCompletionHandler");
 
     LibAVSampleCursor* sampleCursor = [[LibAVSampleCursor alloc] initWithTrackReader:self pts:self.formatReader.duration];
-    
+    if (sampleCursor == nil)
+    {
+        completionHandler(nil, [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorNoSamples userInfo:nil]);
+        return;
+    }
+
     completionHandler(sampleCursor, nil);
 }
 
@@ -67,7 +77,12 @@
     NSLog(@"LibAVTrackReader generateSampleCursorAtPresentationTimeStamp %@", CMTimeCopyDescription(kCFAllocatorDefault, presentationTimeStamp));
 
     LibAVSampleCursor* sampleCursor = [[LibAVSampleCursor alloc] initWithTrackReader:self pts:presentationTimeStamp];
-        
+    if (sampleCursor == nil)
+    {
+        completionHandler(nil, [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorNoSamples userInfo:nil]);
+        return;
+    }
+
     completionHandler(sampleCursor, nil);
 }
 
@@ -81,7 +96,7 @@
     {
         NSLog(@"Made Format Description: %@", format);
 
-        NSArray* formats = @[(id)CFBridgingRelease(format)];
+        NSArray* formats = @[(__bridge id)format];
         
         // This is lame as fuck - we dont have zero based indexes!
         // kCMPersistentTrackID_Invalid = 0 !
@@ -114,7 +129,12 @@
 
 - (void)loadEstimatedDataRateWithCompletionHandler:(void (^)(Float32 estimatedDataRate, NSError * _Nullable error))completionHandler
 {
-    Float32 estimatedDataRate = (Float32) self->stream->codecpar->bit_rate * 8.0;
+    Float32 estimatedDataRate = 0.0;
+    if (self->stream->codecpar->bit_rate > 0)
+    {
+        // MediaExtension expects bytes per second.
+        estimatedDataRate = (Float32)self->stream->codecpar->bit_rate / 8.0f;
+    }
     
     completionHandler(estimatedDataRate, nil);
 }
@@ -133,14 +153,14 @@
     trackInfo.enabled = true;
     
     // Additional Metadata:
-    trackInfo.nominalFrameRate = av_q2d( self->stream->avg_frame_rate );
+    trackInfo.nominalFrameRate = av_q2d(self->stream->avg_frame_rate);
     
     trackInfo.naturalSize = ([self streamMediaType] == kCMMediaType_Video) ? CGSizeMake(self->stream->codecpar->width, self->stream->codecpar->height) : CGSizeZero;
     
-    trackInfo.naturalTimescale = self->stream->time_base.den;
+    trackInfo.naturalTimescale = self->stream->time_base.den > 0 ? self->stream->time_base.den : 600;
     
 //        trackInfo.preferredTransform
-    trackInfo.requiresFrameReordering = true;
+    trackInfo.requiresFrameReordering = (self->stream->codecpar->video_delay > 0);
     
     // IETF BCP 47 (RFC 4646) which might need conversion
 //        trackInfo.extendedLanguageTag
@@ -171,6 +191,8 @@
         case AVMEDIA_TYPE_NB:
             return -1;
     }
+
+    return -1;
 }
 
 // MARK: - CMFormatDescription
@@ -200,6 +222,8 @@
         case AVMEDIA_TYPE_NB:
             return NULL;
     }
+
+    return NULL;
 }
 
 - (nullable CMFormatDescriptionRef) videoFormatDescription

@@ -26,5 +26,5 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView(asset: AVURLAsset(url: URL(filePath: "/Users/vade/SceneEditTest-Fixed-Frame-Numbers.m4v"), options: [AVURLAssetPreferPreciseDurationAndTimingKey : true] ) )
+    ContentView(asset: AVURLAsset(url: URL(filePath: "/Users/vade/Documents/Repositories/Fabric/FFMPEGMediaExtension/scripts/TestMedia/baseline_1920_1080_30fps_h264_aac.mkv"), options: [AVURLAssetPreferPreciseDurationAndTimingKey : true] ) )
 }

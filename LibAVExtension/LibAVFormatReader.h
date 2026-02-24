@@ -29,7 +29,7 @@ NS_ASSUME_NONNULL_BEGIN
 }
 
 @property (readonly, assign) CMTime duration;
-@property (readonly, assign) size_t currentReadOffset;
+@property (readonly, assign) int64_t currentReadOffset;
 @property (readonly, retain) MEByteSource* byteSource;
 
 - (instancetype) initWithByteSource:(MEByteSource*)byteSource;
