@@ -42,6 +42,30 @@ static NSString *LibAVTimeString(CMTime time)
     return [NSString stringWithFormat:@"{%lld/%d = %.6f}", time.value, time.timescale, CMTimeGetSeconds(time)];
 }
 
+static BOOL LibAVBufferHasAnnexBStartCode(const uint8_t *data, size_t size)
+{
+    if (data == NULL || size < 3)
+    {
+        return NO;
+    }
+
+    for (size_t i = 0; i + 3 < size; i++)
+    {
+        if (data[i] == 0x00 && data[i + 1] == 0x00)
+        {
+            if (data[i + 2] == 0x01)
+            {
+                return YES;
+            }
+            if ((i + 3 < size) && data[i + 2] == 0x00 && data[i + 3] == 0x01)
+            {
+                return YES;
+            }
+        }
+    }
+    return NO;
+}
+
 @interface LibAVSampleCursor ()
 @property (readwrite, strong) LibAVTrackReader* trackReader;
 
@@ -70,6 +94,8 @@ static NSString *LibAVTimeString(CMTime time)
 - (void)alignToSourceSampleLocation:(LibAVSampleCursor *)source;
 - (void)beginDebugOp:(NSString *)name timeline:(LibAVCursorStepTimeline)timeline;
 - (NSString *)debugTracePrefix;
+- (int)h264NALLengthFieldSize;
+- (NSData * _Nullable)h264ConvertAnnexBToAVCCData:(const uint8_t *)bytes size:(size_t)size;
 
 @end
 
@@ -399,66 +425,74 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
 
 - (BOOL)samplesWithEarlierDTSsMayHaveLaterPTSsThanCursor:(id<MESampleCursor>)cursor
 {
+    BOOL selfHasPTSDTSDelta = CMTIME_IS_NUMERIC(self.presentationTimeStamp) &&
+                              CMTIME_IS_NUMERIC(self.decodeTimeStamp) &&
+                              CMTIME_COMPARE_INLINE(self.presentationTimeStamp, !=, self.decodeTimeStamp);
+    BOOL otherHasPTSDTSDelta = NO;
+    if (cursor != nil)
+    {
+        CMTime otherPTS = cursor.presentationTimeStamp;
+        CMTime otherDTS = cursor.decodeTimeStamp;
+        otherHasPTSDTSDelta = CMTIME_IS_NUMERIC(otherPTS) &&
+                              CMTIME_IS_NUMERIC(otherDTS) &&
+                              CMTIME_COMPARE_INLINE(otherPTS, !=, otherDTS);
+    }
+
+    BOOL reordered = (selfHasPTSDTSDelta || otherHasPTSDTSDelta) ? [self trackLikelyHasReorderedPresentation] : NO;
     NSLog(@"[LibAVSampleCursor %p %@] query earlierDTSLaterPTSThan cursor=%p -> %d",
           self,
           [self debugTracePrefix],
           cursor,
-          [self trackLikelyHasReorderedPresentation]);
-    return [self trackLikelyHasReorderedPresentation];
+          reordered);
+    return reordered;
 }
 
 - (BOOL)samplesWithLaterDTSsMayHaveEarlierPTSsThanCursor:(id<MESampleCursor>)cursor
 {
+    BOOL selfHasPTSDTSDelta = CMTIME_IS_NUMERIC(self.presentationTimeStamp) &&
+                              CMTIME_IS_NUMERIC(self.decodeTimeStamp) &&
+                              CMTIME_COMPARE_INLINE(self.presentationTimeStamp, !=, self.decodeTimeStamp);
+    BOOL otherHasPTSDTSDelta = NO;
+    if (cursor != nil)
+    {
+        CMTime otherPTS = cursor.presentationTimeStamp;
+        CMTime otherDTS = cursor.decodeTimeStamp;
+        otherHasPTSDTSDelta = CMTIME_IS_NUMERIC(otherPTS) &&
+                              CMTIME_IS_NUMERIC(otherDTS) &&
+                              CMTIME_COMPARE_INLINE(otherPTS, !=, otherDTS);
+    }
+
+    BOOL reordered = (selfHasPTSDTSDelta || otherHasPTSDTSDelta) ? [self trackLikelyHasReorderedPresentation] : NO;
     NSLog(@"[LibAVSampleCursor %p %@] query laterDTSEarlierPTSThan cursor=%p -> %d",
           self,
           [self debugTracePrefix],
           cursor,
-          [self trackLikelyHasReorderedPresentation]);
-    return [self trackLikelyHasReorderedPresentation];
+          reordered);
+    return reordered;
 }
 
 - (MESampleCursorChunk * _Nullable)chunkDetailsReturningError:(NSError *__autoreleasing  _Nullable * _Nullable)error
 {
-    if (self.sampleOffset < 0 || self.sampleSize == 0 || self.trackReader.formatReader.byteSource == nil)
+    // Force AVFoundation to request CMSampleBuffer objects through
+    // loadSampleBufferContainingSamplesToEndCursor:, where we can provide
+    // normalized packet payloads and timing consistently.
+    if (error != NULL)
     {
-        if (error != NULL)
-        {
-            *error = [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorLocationNotAvailable userInfo:nil];
-        }
-        return nil;
+        *error = [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorLocationNotAvailable userInfo:nil];
     }
-
-    AVSampleCursorStorageRange range;
-    range.offset = self.sampleOffset;
-    range.length = self.sampleSize;
-
-    AVSampleCursorChunkInfo info = {0};
-    info.chunkSampleCount = 1;
-    info.chunkHasUniformSampleSizes = false;
-    info.chunkHasUniformSampleDurations = false;
-    info.chunkHasUniformFormatDescriptions = true;
-
-    return [[MESampleCursorChunk alloc] initWithByteSource:self.trackReader.formatReader.byteSource
-                                         chunkStorageRange:range
-                                                 chunkInfo:info
-                                    sampleIndexWithinChunk:0];
+    return nil;
 }
 
 - (MESampleLocation * _Nullable)sampleLocationReturningError:(NSError *__autoreleasing  _Nullable * _Nullable)error
 {
-    if (self.sampleOffset < 0 || self.sampleSize == 0 || self.trackReader.formatReader.byteSource == nil)
+    // Force AVFoundation to request CMSampleBuffer objects through
+    // loadSampleBufferContainingSamplesToEndCursor:, where we can provide
+    // normalized packet payloads and timing consistently.
+    if (error != NULL)
     {
-        if (error != NULL)
-        {
-            *error = [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorLocationNotAvailable userInfo:nil];
-        }
-        return nil;
+        *error = [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorLocationNotAvailable userInfo:nil];
     }
-
-    AVSampleCursorStorageRange range;
-    range.offset = self.sampleOffset;
-    range.length = self.sampleSize;
-    return [[MESampleLocation alloc] initWithByteSource:self.trackReader.formatReader.byteSource sampleLocation:range];
+    return nil;
 }
 
 - (void)loadSampleBufferContainingSamplesToEndCursor:(id<MESampleCursor> _Nullable)endSampleCursor
@@ -1423,16 +1457,36 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
     CMBlockBufferRef blockBuffer = NULL;
     CMSampleBufferRef sampleBuffer = NULL;
 
+    const uint8_t *packetBytes = packet->data;
+    size_t packetSize = (size_t)packet->size;
+    NSData *convertedData = nil;
+    BOOL didConvertToAVCC = NO;
+
+    if (self.trackReader != nil &&
+        self.trackReader->stream != NULL &&
+        self.trackReader->stream->codecpar != NULL &&
+        self.trackReader->stream->codecpar->codec_id == AV_CODEC_ID_H264 &&
+        LibAVBufferHasAnnexBStartCode(packetBytes, packetSize))
+    {
+        convertedData = [self h264ConvertAnnexBToAVCCData:packetBytes size:packetSize];
+        if (convertedData != nil && convertedData.length > 0)
+        {
+            packetBytes = convertedData.bytes;
+            packetSize = convertedData.length;
+            didConvertToAVCC = YES;
+        }
+    }
+
     // Allocate block-buffer-owned memory and copy packet bytes into it.
     // Never pass FFmpeg-owned packet memory directly, because CMBlockBuffer finalization
     // can otherwise attempt to free memory that is managed by libavcodec/libavformat.
     OSStatus blockStatus = CMBlockBufferCreateWithMemoryBlock(kCFAllocatorDefault,
                                                                NULL,
-                                                               packet->size,
+                                                               packetSize,
                                                                kCFAllocatorDefault,
                                                                NULL,
                                                                0,
-                                                               packet->size,
+                                                               packetSize,
                                                                0,
                                                                &blockBuffer);
     if (blockStatus != kCMBlockBufferNoErr)
@@ -1440,10 +1494,10 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
         return NULL;
     }
 
-    blockStatus = CMBlockBufferReplaceDataBytes(packet->data,
+    blockStatus = CMBlockBufferReplaceDataBytes(packetBytes,
                                                 blockBuffer,
                                                 0,
-                                                packet->size);
+                                                packetSize);
     if (blockStatus != kCMBlockBufferNoErr)
     {
         CFRelease(blockBuffer);
@@ -1455,7 +1509,7 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
     timingInfo.presentationTimeStamp = self.presentationTimeStamp;
     timingInfo.decodeTimeStamp = self.decodeTimeStamp;
 
-    size_t sampleSize = (size_t)packet->size;
+    size_t sampleSize = packetSize;
 
     OSStatus sampleStatus = CMSampleBufferCreateReady(kCFAllocatorDefault,
                                                       blockBuffer,
@@ -1474,7 +1528,132 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
         return NULL;
     }
 
+    if (didConvertToAVCC)
+    {
+        NSLog(@"[LibAVSampleCursor %p %@] converted H264 AnnexB->AVCC packetSize=%d convertedSize=%zu",
+              self,
+              [self debugTracePrefix],
+              packet->size,
+              packetSize);
+    }
+
     return sampleBuffer;
+}
+
+- (int)h264NALLengthFieldSize
+{
+    if (self.trackReader == nil || self.trackReader->stream == NULL || self.trackReader->stream->codecpar == NULL)
+    {
+        return 4;
+    }
+
+    const AVCodecParameters *codecpar = self.trackReader->stream->codecpar;
+    if (codecpar->extradata != NULL && codecpar->extradata_size >= 5 && codecpar->extradata[0] == 1)
+    {
+        int lengthSize = (codecpar->extradata[4] & 0x03) + 1;
+        if (lengthSize >= 1 && lengthSize <= 4)
+        {
+            return lengthSize;
+        }
+    }
+
+    return 4;
+}
+
+- (NSData * _Nullable)h264ConvertAnnexBToAVCCData:(const uint8_t *)bytes size:(size_t)size
+{
+    if (bytes == NULL || size == 0)
+    {
+        return nil;
+    }
+
+    int lengthFieldSize = [self h264NALLengthFieldSize];
+    NSMutableData *output = [NSMutableData dataWithCapacity:size];
+
+    size_t cursor = 0;
+    while (cursor + 3 < size)
+    {
+        size_t start = SIZE_MAX;
+        size_t startCodeSize = 0;
+
+        for (size_t i = cursor; i + 3 < size; i++)
+        {
+            if (bytes[i] == 0x00 && bytes[i + 1] == 0x00)
+            {
+                if (bytes[i + 2] == 0x01)
+                {
+                    start = i;
+                    startCodeSize = 3;
+                    break;
+                }
+                if ((i + 3 < size) && bytes[i + 2] == 0x00 && bytes[i + 3] == 0x01)
+                {
+                    start = i;
+                    startCodeSize = 4;
+                    break;
+                }
+            }
+        }
+
+        if (start == SIZE_MAX)
+        {
+            break;
+        }
+
+        size_t nalStart = start + startCodeSize;
+        size_t nextStart = size;
+        for (size_t i = nalStart; i + 3 < size; i++)
+        {
+            if (bytes[i] == 0x00 && bytes[i + 1] == 0x00 &&
+                (bytes[i + 2] == 0x01 || ((i + 3 < size) && bytes[i + 2] == 0x00 && bytes[i + 3] == 0x01)))
+            {
+                nextStart = i;
+                break;
+            }
+        }
+
+        size_t nalSize = (nextStart > nalStart) ? (nextStart - nalStart) : 0;
+        if (nalSize > 0)
+        {
+            uint8_t lengthPrefix[4] = {0, 0, 0, 0};
+            switch (lengthFieldSize)
+            {
+                case 1:
+                    if (nalSize > UINT8_MAX) { return nil; }
+                    lengthPrefix[0] = (uint8_t)nalSize;
+                    break;
+                case 2:
+                    if (nalSize > UINT16_MAX) { return nil; }
+                    lengthPrefix[0] = (uint8_t)((nalSize >> 8) & 0xFF);
+                    lengthPrefix[1] = (uint8_t)(nalSize & 0xFF);
+                    break;
+                case 3:
+                    if (nalSize > 0xFFFFFF) { return nil; }
+                    lengthPrefix[0] = (uint8_t)((nalSize >> 16) & 0xFF);
+                    lengthPrefix[1] = (uint8_t)((nalSize >> 8) & 0xFF);
+                    lengthPrefix[2] = (uint8_t)(nalSize & 0xFF);
+                    break;
+                default:
+                    if (nalSize > UINT32_MAX) { return nil; }
+                    lengthPrefix[0] = (uint8_t)((nalSize >> 24) & 0xFF);
+                    lengthPrefix[1] = (uint8_t)((nalSize >> 16) & 0xFF);
+                    lengthPrefix[2] = (uint8_t)((nalSize >> 8) & 0xFF);
+                    lengthPrefix[3] = (uint8_t)(nalSize & 0xFF);
+                    break;
+            }
+
+            [output appendBytes:lengthPrefix length:(NSUInteger)lengthFieldSize];
+            [output appendBytes:(bytes + nalStart) length:nalSize];
+        }
+
+        if (nextStart <= cursor)
+        {
+            break;
+        }
+        cursor = nextStart;
+    }
+
+    return (output.length > 0) ? output : nil;
 }
 
 #pragma mark - Dependency extraction
