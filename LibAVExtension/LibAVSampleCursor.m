@@ -62,8 +62,14 @@ static NSString *LibAVTimeString(CMTime time)
 @property (nonatomic, readwrite, assign) size_t sampleSize;
 @property (nonatomic, readwrite, assign) int64_t cursorReadOffset;
 @property (nonatomic, readwrite) CMTime pendingDecodeAnchorTime;
+@property (nonatomic, readwrite, assign) int64_t debugOpID;
+@property (nonatomic, readwrite, copy) NSString * _Nullable debugOpName;
+@property (nonatomic, readwrite, assign) LibAVCursorStepTimeline debugTimeline;
 
 - (BOOL)trackLikelyHasReorderedPresentation;
+- (void)alignToSourceSampleLocation:(LibAVSampleCursor *)source;
+- (void)beginDebugOp:(NSString *)name timeline:(LibAVCursorStepTimeline)timeline;
+- (NSString *)debugTracePrefix;
 
 @end
 
@@ -74,6 +80,8 @@ static NSString *LibAVTimeString(CMTime time)
     uint8_t *_cursorAVIOBuffer;
     AVPacket *_packet;
 }
+
+static int64_t gLibAVCursorDebugOpCounter = 0;
 
 #pragma mark - FFmpeg I/O callbacks
 
@@ -170,8 +178,12 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
         self.cursorReadOffset = 0;
         self.pendingDecodeAnchorTime = kCMTimeInvalid;
         self.isReady = NO;
+        self.debugOpID = 0;
+        self.debugOpName = @"init";
+        self.debugTimeline = LibAVCursorStepTimelinePresentation;
 
-        NSLog(@"[LibAVSampleCursor %p] init requestedPTS=%@", self, LibAVTimeString(pts));
+        [self beginDebugOp:@"initWithPTS" timeline:LibAVCursorStepTimelinePresentation];
+        NSLog(@"[LibAVSampleCursor %p %@] init requestedPTS=%@", self, [self debugTracePrefix], LibAVTimeString(pts));
         [self openDemuxContext];
 
         if (_cursorFormatCtx == NULL || _packet == NULL || !self.isReady)
@@ -193,8 +205,9 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
             [self closeDemuxContext];
             return nil;
         }
-        NSLog(@"[LibAVSampleCursor %p] init ready pts=%@ dts=%@ dur=%@ size=%zu offset=%lld",
+        NSLog(@"[LibAVSampleCursor %p %@] init ready pts=%@ dts=%@ dur=%@ size=%zu offset=%lld",
               self,
+              [self debugTracePrefix],
               LibAVTimeString(self.presentationTimeStamp),
               LibAVTimeString(self.decodeTimeStamp),
               LibAVTimeString(self.currentSampleDuration),
@@ -247,6 +260,18 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
                                                                        offset:self.sampleOffset
                                                                      syncInfo:self.syncInfo
                                                                dependencyInfo:self.dependencyInfo];
+    if (copy != nil)
+    {
+        [copy alignToSourceSampleLocation:self];
+    }
+    NSLog(@"[LibAVSampleCursor %p %@] copy -> %p srcPTS=%@ srcDTS=%@ dstPTS=%@ dstDTS=%@",
+          self,
+          [self debugTracePrefix],
+          copy,
+          LibAVTimeString(self.presentationTimeStamp),
+          LibAVTimeString(self.decodeTimeStamp),
+          LibAVTimeString(copy.presentationTimeStamp),
+          LibAVTimeString(copy.decodeTimeStamp));
     return copy;
 }
 
@@ -255,6 +280,7 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
 - (void)stepByDecodeTime:(CMTime)deltaDecodeTime
        completionHandler:(void (^)(CMTime, BOOL, NSError * _Nullable))completionHandler
 {
+    [self beginDebugOp:@"stepByDecodeTime" timeline:LibAVCursorStepTimelineDecode];
     if (!self.isReady)
     {
         completionHandler(self.decodeTimeStamp, YES, [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorInternalFailure userInfo:nil]);
@@ -291,8 +317,9 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
         return;
     }
 
-    NSLog(@"[LibAVSampleCursor %p] stepByDecodeTime delta=%@ target=%@ resultDTS=%@ resultPTS=%@ pinned=%d",
+    NSLog(@"[LibAVSampleCursor %p %@] stepByDecodeTime delta=%@ target=%@ resultDTS=%@ resultPTS=%@ pinned=%d",
           self,
+          [self debugTracePrefix],
           LibAVTimeString(deltaDecodeTime),
           LibAVTimeString(targetDTS),
           LibAVTimeString(self.decodeTimeStamp),
@@ -304,6 +331,7 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
 - (void)stepByPresentationTime:(CMTime)deltaPresentationTime
              completionHandler:(void (^)(CMTime, BOOL, NSError * _Nullable))completionHandler
 {
+    [self beginDebugOp:@"stepByPresentationTime" timeline:LibAVCursorStepTimelinePresentation];
     if (!self.isReady)
     {
         completionHandler(self.presentationTimeStamp, YES, [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorInternalFailure userInfo:nil]);
@@ -340,8 +368,9 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
         return;
     }
 
-    NSLog(@"[LibAVSampleCursor %p] stepByPresentationTime delta=%@ target=%@ resultPTS=%@ resultDTS=%@ pinned=%d",
+    NSLog(@"[LibAVSampleCursor %p %@] stepByPresentationTime delta=%@ target=%@ resultPTS=%@ resultDTS=%@ pinned=%d",
           self,
+          [self debugTracePrefix],
           LibAVTimeString(deltaPresentationTime),
           LibAVTimeString(targetPTS),
           LibAVTimeString(self.presentationTimeStamp),
@@ -353,14 +382,16 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
 - (void)stepInDecodeOrderByCount:(int64_t)stepCount
                 completionHandler:(void (^)(int64_t actualStepCount, NSError * _Nullable error))completionHandler
 {
-    NSLog(@"[LibAVSampleCursor %p] stepInDecodeOrderByCount requested=%lld", self, stepCount);
+    [self beginDebugOp:@"stepInDecodeOrderByCount" timeline:LibAVCursorStepTimelineDecode];
+    NSLog(@"[LibAVSampleCursor %p %@] stepInDecodeOrderByCount requested=%lld", self, [self debugTracePrefix], stepCount);
     [self stepByCount:stepCount timeline:LibAVCursorStepTimelineDecode completionHandler:completionHandler];
 }
 
 - (void)stepInPresentationOrderByCount:(int64_t)stepCount
                      completionHandler:(void (^)(int64_t actualStepCount, NSError * _Nullable error))completionHandler
 {
-    NSLog(@"[LibAVSampleCursor %p] stepInPresentationOrderByCount requested=%lld", self, stepCount);
+    [self beginDebugOp:@"stepInPresentationOrderByCount" timeline:LibAVCursorStepTimelinePresentation];
+    NSLog(@"[LibAVSampleCursor %p %@] stepInPresentationOrderByCount requested=%lld", self, [self debugTracePrefix], stepCount);
     [self stepByCount:stepCount timeline:LibAVCursorStepTimelinePresentation completionHandler:completionHandler];
 }
 
@@ -368,13 +399,21 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
 
 - (BOOL)samplesWithEarlierDTSsMayHaveLaterPTSsThanCursor:(id<MESampleCursor>)cursor
 {
-    (void)cursor;
+    NSLog(@"[LibAVSampleCursor %p %@] query earlierDTSLaterPTSThan cursor=%p -> %d",
+          self,
+          [self debugTracePrefix],
+          cursor,
+          [self trackLikelyHasReorderedPresentation]);
     return [self trackLikelyHasReorderedPresentation];
 }
 
 - (BOOL)samplesWithLaterDTSsMayHaveEarlierPTSsThanCursor:(id<MESampleCursor>)cursor
 {
-    (void)cursor;
+    NSLog(@"[LibAVSampleCursor %p %@] query laterDTSEarlierPTSThan cursor=%p -> %d",
+          self,
+          [self debugTracePrefix],
+          cursor,
+          [self trackLikelyHasReorderedPresentation]);
     return [self trackLikelyHasReorderedPresentation];
 }
 
@@ -425,8 +464,10 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
 - (void)loadSampleBufferContainingSamplesToEndCursor:(id<MESampleCursor> _Nullable)endSampleCursor
                                    completionHandler:(void (^)(CMSampleBufferRef _Nullable, NSError * _Nullable))completionHandler
 {
-    NSLog(@"[LibAVSampleCursor %p] loadSampleBuffer start cursorPTS=%@ cursorDTS=%@ cursorDur=%@ cursorSize=%zu endPTS=%@",
+    [self beginDebugOp:@"loadSampleBuffer" timeline:LibAVCursorStepTimelinePresentation];
+    NSLog(@"[LibAVSampleCursor %p %@] loadSampleBuffer start cursorPTS=%@ cursorDTS=%@ cursorDur=%@ cursorSize=%zu endPTS=%@",
           self,
+          [self debugTracePrefix],
           LibAVTimeString(self.presentationTimeStamp),
           LibAVTimeString(self.decodeTimeStamp),
           LibAVTimeString(self.currentSampleDuration),
@@ -464,8 +505,9 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
 
     // Ownership is transferred to the consumer via completion callback.
     completionHandler(sampleBuffer, nil);
-    NSLog(@"[LibAVSampleCursor %p] loadSampleBuffer delivered pts=%@ dts=%@ dur=%@ size=%zu",
+    NSLog(@"[LibAVSampleCursor %p %@] loadSampleBuffer delivered pts=%@ dts=%@ dur=%@ size=%zu",
           self,
+          [self debugTracePrefix],
           LibAVTimeString(self.presentationTimeStamp),
           LibAVTimeString(self.decodeTimeStamp),
           LibAVTimeString(self.currentSampleDuration),
@@ -609,8 +651,9 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
     }
 
     (void)timeline;
-    NSLog(@"[LibAVSampleCursor %p] seek timeline=%@ requested=%@ normalized=%@ ffTs=%lld result=%d",
+    NSLog(@"[LibAVSampleCursor %p %@] seek timeline=%@ requested=%@ normalized=%@ ffTs=%lld result=%d",
           self,
+          [self debugTracePrefix],
           (timeline == LibAVCursorStepTimelineDecode) ? @"dts" : @"pts",
           LibAVTimeString(time),
           LibAVTimeString(normalizedTime),
@@ -716,6 +759,110 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
         return 0;
     }
 
+    // Reordered codecs (e.g. H.264 with B-frames): the first packet after seek can overshoot
+    // the requested presentation timestamp. Scan a bounded window and pick the closest packet
+    // whose PTS is >= target.
+    if (timeline == LibAVCursorStepTimelinePresentation && [self trackLikelyHasReorderedPresentation])
+    {
+        AVPacket *bestAtOrAfterPacket = av_packet_alloc();
+        AVPacket *bestLastPacket = av_packet_alloc();
+        if (bestAtOrAfterPacket == NULL || bestLastPacket == NULL)
+        {
+            if (bestAtOrAfterPacket != NULL) av_packet_free(&bestAtOrAfterPacket);
+            if (bestLastPacket != NULL) av_packet_free(&bestLastPacket);
+            return 0;
+        }
+
+        BOOL hasBestAtOrAfter = NO;
+        BOOL hasBestLast = NO;
+        CMTime bestAtOrAfterPTS = kCMTimeInvalid;
+        CMTime bestLastPTS = kCMTimeInvalid;
+
+        const int maxReorderScan = 256;
+        int scan = 0;
+
+        while (scan < maxReorderScan)
+        {
+            CMTime cursorPTS = self.presentationTimeStamp;
+            if (CMTIME_IS_NUMERIC(cursorPTS))
+            {
+                if (hasBestLast == NO || CMTIME_COMPARE_INLINE(cursorPTS, >, bestLastPTS))
+                {
+                    av_packet_unref(bestLastPacket);
+                    if (av_packet_ref(bestLastPacket, _packet) == 0)
+                    {
+                        hasBestLast = YES;
+                        bestLastPTS = cursorPTS;
+                    }
+                }
+            }
+
+            if (CMTIME_IS_NUMERIC(cursorPTS) && CMTIME_COMPARE_INLINE(cursorPTS, >=, normalizedTarget))
+            {
+                if (!hasBestAtOrAfter || CMTIME_COMPARE_INLINE(cursorPTS, <, bestAtOrAfterPTS))
+                {
+                    av_packet_unref(bestAtOrAfterPacket);
+                    if (av_packet_ref(bestAtOrAfterPacket, _packet) == 0)
+                    {
+                        hasBestAtOrAfter = YES;
+                        bestAtOrAfterPTS = cursorPTS;
+                    }
+                }
+
+                // Exact target match: no need to continue scanning.
+                if (hasBestAtOrAfter && CMTIME_COMPARE_INLINE(bestAtOrAfterPTS, ==, normalizedTarget))
+                {
+                    break;
+                }
+            }
+
+            int nextResult = [self readNextPacketForTrack];
+            if (nextResult < 0)
+            {
+                break;
+            }
+
+            [self updateStateForPacket:_packet];
+            observedAnyPacket = YES;
+            scan += 1;
+        }
+
+        AVPacket *selectedPacket = NULL;
+        if (hasBestAtOrAfter)
+        {
+            selectedPacket = bestAtOrAfterPacket;
+        }
+        else if (hasBestLast)
+        {
+            selectedPacket = bestLastPacket;
+        }
+
+        if (selectedPacket != NULL)
+        {
+            av_packet_unref(_packet);
+            if (av_packet_ref(_packet, selectedPacket) == 0)
+            {
+                int streamIndex = self.trackReader.streamIndex - 1;
+                AVRational timeBase = {1, 1000000};
+                if (_cursorFormatCtx != NULL && streamIndex >= 0 && streamIndex < (int)_cursorFormatCtx->nb_streams)
+                {
+                    timeBase = _cursorFormatCtx->streams[streamIndex]->time_base;
+                }
+                // We are explicitly repositioning to a selected packet.
+                // Re-anchor decode timeline to the selected packet's presentation point so
+                // packets with missing DTS do not become "invalid" at init/copy boundaries.
+                CMTime selectedPTS = [self cmTimeFromTimestamp:selectedPacket->pts timeBase:timeBase];
+                self.decodeTimeStamp = kCMTimeInvalid;
+                self.pendingDecodeAnchorTime = CMTIME_IS_NUMERIC(selectedPTS) ? selectedPTS : normalizedTarget;
+                [self updateStateForPacket:_packet];
+            }
+        }
+
+        av_packet_free(&bestAtOrAfterPacket);
+        av_packet_free(&bestLastPacket);
+        return observedAnyPacket ? 0 : AVERROR_EOF;
+    }
+
     int guard = 0;
     const int maxPacketsToScan = 20000;
 
@@ -773,6 +920,7 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
 
     AVRational timeBase = _cursorFormatCtx->streams[streamIndex]->time_base;
 
+    CMTime previousDecode = self.decodeTimeStamp;
     CMTime packetDTS = [self cmTimeFromTimestamp:packet->dts timeBase:timeBase];
     CMTime packetPTS = [self cmTimeFromTimestamp:packet->pts timeBase:timeBase];
 
@@ -786,7 +934,17 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
     // Keep decode and presentation timelines independent.
     if (CMTIME_IS_NUMERIC(packetDTS))
     {
-        self.decodeTimeStamp = packetDTS;
+        CMTime decodeCandidate = packetDTS;
+        // Some streams start with NOPTS packets then later expose small DTS values.
+        // Prevent decode timeline regressions that can trigger host livelock.
+        if (CMTIME_IS_NUMERIC(previousDecode) && CMTIME_COMPARE_INLINE(decodeCandidate, <=, previousDecode))
+        {
+            CMTime step = CMTIME_IS_NUMERIC(duration) && CMTIME_COMPARE_INLINE(duration, >, kCMTimeZero)
+                ? duration
+                : [self fallbackSampleDuration];
+            decodeCandidate = CMTimeAdd(previousDecode, step);
+        }
+        self.decodeTimeStamp = decodeCandidate;
         self.pendingDecodeAnchorTime = kCMTimeInvalid;
     }
     else
@@ -830,8 +988,9 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
 
     self.sampleSize = (size_t)MAX(packet->size, 0);
     self.sampleOffset = packet->pos;
-    NSLog(@"[LibAVSampleCursor %p] packetState pts=%@ dts=%@ dur=%@ packetPts=%lld packetDts=%lld packetDur=%lld packetPos=%lld size=%zu key=%d",
+    NSLog(@"[LibAVSampleCursor %p %@] packetState pts=%@ dts=%@ dur=%@ packetPts=%lld packetDts=%lld packetDur=%lld packetPos=%lld size=%zu key=%d",
           self,
+          [self debugTracePrefix],
           LibAVTimeString(self.presentationTimeStamp),
           LibAVTimeString(self.decodeTimeStamp),
           LibAVTimeString(self.currentSampleDuration),
@@ -846,6 +1005,103 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
     // For local file-backed sources, the byte source has the whole file available.
     self.decodeTimeOfLastSampleReachableByForwardSteppingThatIsAlreadyLoadedByByteSource =
         CMTIME_IS_VALID(self.trackReader.formatReader.duration) ? self.trackReader.formatReader.duration : kCMTimeInvalid;
+}
+
+- (void)alignToSourceSampleLocation:(LibAVSampleCursor *)source
+{
+    if (source == nil || source.sampleOffset < 0 || _cursorFormatCtx == NULL || _packet == NULL)
+    {
+        return;
+    }
+
+    if (self.sampleOffset == source.sampleOffset)
+    {
+        return;
+    }
+
+    // Start from source PTS neighborhood, then scan forward in decode order until exact packet offset matches.
+    int seekResult = [self seekToPTS:source.presentationTimeStamp];
+    if (seekResult < 0)
+    {
+        return;
+    }
+
+    int readResult = [self readPacketAtOrAfterTime:source.presentationTimeStamp timeline:LibAVCursorStepTimelinePresentation];
+    if (readResult < 0)
+    {
+        return;
+    }
+
+    if (self.sampleOffset == source.sampleOffset)
+    {
+        return;
+    }
+
+    const int maxScan = 512;
+    for (int i = 0; i < maxScan; i++)
+    {
+        int next = [self readNextPacketForTrack];
+        if (next < 0)
+        {
+            break;
+        }
+        [self updateStateForPacket:_packet];
+        if (self.sampleOffset == source.sampleOffset)
+        {
+            NSLog(@"[LibAVSampleCursor %p] copy-align matched source offset=%lld via local scan",
+                  self,
+                  source.sampleOffset);
+            break;
+        }
+    }
+
+    if (self.sampleOffset == source.sampleOffset)
+    {
+        return;
+    }
+
+    // Fallback: full scan from start to exact source packet offset.
+    // This is expensive, but guarantees copy stability for host probe patterns.
+    int restartSeek = [self seekToPTS:kCMTimeZero];
+    if (restartSeek < 0)
+    {
+        return;
+    }
+    int restartRead = [self readPacketAtOrAfterTime:kCMTimeZero timeline:LibAVCursorStepTimelinePresentation];
+    if (restartRead < 0)
+    {
+        return;
+    }
+    if (self.sampleOffset == source.sampleOffset)
+    {
+        NSLog(@"[LibAVSampleCursor %p] copy-align matched source offset=%lld after restart at zero",
+              self,
+              source.sampleOffset);
+        return;
+    }
+
+    const int maxFullScan = 50000;
+    for (int i = 0; i < maxFullScan; i++)
+    {
+        int next = [self readNextPacketForTrack];
+        if (next < 0)
+        {
+            break;
+        }
+        [self updateStateForPacket:_packet];
+        if (self.sampleOffset == source.sampleOffset)
+        {
+            NSLog(@"[LibAVSampleCursor %p] copy-align matched source offset=%lld via full scan",
+                  self,
+                  source.sampleOffset);
+            return;
+        }
+    }
+
+    NSLog(@"[LibAVSampleCursor %p] copy-align failed source offset=%lld dst offset=%lld",
+          self,
+          source.sampleOffset,
+          self.sampleOffset);
 }
 
 - (CMTime)fallbackSampleDuration
@@ -906,8 +1162,9 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
     }
 
     int64_t actualStepCount = 0;
-    NSLog(@"[LibAVSampleCursor %p] stepByCount timeline=%@ requested=%lld startPTS=%@ startDTS=%@",
+    NSLog(@"[LibAVSampleCursor %p %@] stepByCount timeline=%@ requested=%lld startPTS=%@ startDTS=%@",
           self,
+          [self debugTracePrefix],
           (timeline == LibAVCursorStepTimelineDecode) ? @"dts" : @"pts",
           stepCount,
           LibAVTimeString(self.presentationTimeStamp),
@@ -917,7 +1174,55 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
     {
         for (int64_t i = 0; i < stepCount; i++)
         {
-            BOOL useLinearDemuxStep = (timeline == LibAVCursorStepTimelineDecode) || ![self trackLikelyHasReorderedPresentation];
+            if (timeline == LibAVCursorStepTimelineDecode)
+            {
+                CMTime startDTS = self.decodeTimeStamp;
+                int scan = 0;
+                const int maxScan = 4096;
+                BOOL advanced = NO;
+
+                while (scan < maxScan)
+                {
+                    int readResult = [self readNextPacketForTrack];
+                    if (readResult < 0)
+                    {
+                        if (readResult == AVERROR_EOF)
+                        {
+                            completionHandler(actualStepCount, nil);
+                            return;
+                        }
+                        completionHandler(actualStepCount, [self libAVFormatErrorFrom:readResult]);
+                        return;
+                    }
+
+                    [self updateStateForPacket:_packet];
+                    scan += 1;
+
+                    if (!CMTIME_IS_NUMERIC(startDTS) ||
+                        !CMTIME_IS_NUMERIC(self.decodeTimeStamp) ||
+                        CMTIME_COMPARE_INLINE(self.decodeTimeStamp, >, startDTS))
+                    {
+                        advanced = YES;
+                        break;
+                    }
+                }
+
+                if (!advanced)
+                {
+                    NSLog(@"[LibAVSampleCursor %p %@] stepByCount no-forward-progress timeline=dts startDTS=%@ endDTS=%@",
+                          self,
+                          [self debugTracePrefix],
+                          LibAVTimeString(startDTS),
+                          LibAVTimeString(self.decodeTimeStamp));
+                    completionHandler(actualStepCount, nil);
+                    return;
+                }
+
+                actualStepCount += 1;
+                continue;
+            }
+
+            BOOL useLinearDemuxStep = ![self trackLikelyHasReorderedPresentation];
             if (useLinearDemuxStep)
             {
                 int readResult = [self readNextPacketForTrack];
@@ -992,12 +1297,28 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
                 }
             }
 
+            // If we could not advance presentation time, do not report forward progress.
+            // This can happen near EOS when seek(target) resolves to the last sample repeatedly.
+            if (CMTIME_IS_NUMERIC(startPTS) &&
+                CMTIME_IS_NUMERIC(self.presentationTimeStamp) &&
+                CMTIME_COMPARE_INLINE(self.presentationTimeStamp, <=, startPTS))
+            {
+                NSLog(@"[LibAVSampleCursor %p %@] stepByCount no-forward-progress timeline=pts startPTS=%@ endPTS=%@",
+                      self,
+                      [self debugTracePrefix],
+                      LibAVTimeString(startPTS),
+                      LibAVTimeString(self.presentationTimeStamp));
+                completionHandler(actualStepCount, nil);
+                return;
+            }
+
             actualStepCount += 1;
         }
 
         completionHandler(actualStepCount, nil);
-        NSLog(@"[LibAVSampleCursor %p] stepByCount done actual=%lld endPTS=%@ endDTS=%@",
+        NSLog(@"[LibAVSampleCursor %p %@] stepByCount done actual=%lld endPTS=%@ endDTS=%@",
               self,
+              [self debugTracePrefix],
               actualStepCount,
               LibAVTimeString(self.presentationTimeStamp),
               LibAVTimeString(self.decodeTimeStamp));
@@ -1047,8 +1368,9 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
     }
 
     completionHandler(actualStepCount, nil);
-    NSLog(@"[LibAVSampleCursor %p] stepByCount done actual=%lld endPTS=%@ endDTS=%@",
+    NSLog(@"[LibAVSampleCursor %p %@] stepByCount done actual=%lld endPTS=%@ endDTS=%@",
           self,
+          [self debugTracePrefix],
           actualStepCount,
           LibAVTimeString(self.presentationTimeStamp),
           LibAVTimeString(self.decodeTimeStamp));
@@ -1195,22 +1517,42 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
 
 - (BOOL)trackLikelyHasReorderedPresentation
 {
+    if (self.trackReader == nil || self.trackReader->stream == NULL)
+    {
+        return NO;
+    }
+
     const AVCodecParameters *codecpar = self.trackReader->stream->codecpar;
     if (codecpar == NULL)
+    {
+        return NO;
+    }
+
+    // Prefer stream signaled reordering depth; this avoids forcing reordered handling
+    // for all-I or otherwise monotonic H.264/HEVC streams.
+    if (codecpar->video_delay > 0)
     {
         return YES;
     }
 
-    switch (codecpar->codec_id)
-    {
-        case AV_CODEC_ID_H264:
-        case AV_CODEC_ID_HEVC:
-        case AV_CODEC_ID_MPEG2VIDEO:
-        case AV_CODEC_ID_MPEG4:
-            return YES;
-        default:
-            return NO;
+    return NO;
+}
+
+- (void)beginDebugOp:(NSString *)name timeline:(LibAVCursorStepTimeline)timeline
+{
+    @synchronized([LibAVSampleCursor class]) {
+        gLibAVCursorDebugOpCounter += 1;
+        self.debugOpID = gLibAVCursorDebugOpCounter;
     }
+    self.debugOpName = name;
+    self.debugTimeline = timeline;
+}
+
+- (NSString *)debugTracePrefix
+{
+    NSString *op = (self.debugOpName.length > 0) ? self.debugOpName : @"unknown";
+    NSString *timeline = (self.debugTimeline == LibAVCursorStepTimelineDecode) ? @"dts" : @"pts";
+    return [NSString stringWithFormat:@"op=%@#%lld tl=%@", op, self.debugOpID, timeline];
 }
 
 @end

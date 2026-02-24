@@ -77,6 +77,7 @@ private enum TestPaths {
 
     // Baby-step demux validation set: all-I H.264 only.
     static let sampleWalkFixtureCases: [FixtureCase] = [
+        .init(baseName: "baseline_1920_1080_30fps_h264_aac", ext: "mkv"),
         .init(baseName: "baseline_1920_1080_30fps_h264_alli_aac", ext: "mkv"),
     ]
 
@@ -328,11 +329,20 @@ struct LibAVExtensionIntegrationTests {
             }
             #expect(stats.sampleCount > 0)
             #expect(stats.totalBytes > 0)
-            #expect(stats.nonMonotonicPTSCount == 0)
             #expect(stats.invalidDurationCount == 0)
             #expect(stats.invalidDTSCount == 0)
-            #expect(stats.ptsDtsMismatchCount == 0)
             #expect(stats.keyframeCount > 0)
+
+            let hasBFrames = (refStream.has_b_frames ?? 0) > 0
+            if hasBFrames {
+                // Reordered streams can be delivered in decode order, so PTS may regress.
+                #expect(stats.nonMonotonicPTSCount > 0)
+                // Reordered streams legitimately carry PTS != DTS on some samples.
+                #expect(stats.ptsDtsMismatchCount > 0)
+            } else {
+                #expect(stats.nonMonotonicPTSCount == 0)
+                #expect(stats.ptsDtsMismatchCount == 0)
+            }
 
             // In compressed sample mode, image buffers should not be produced.
             #expect(stats.imageBufferCount == 0)
