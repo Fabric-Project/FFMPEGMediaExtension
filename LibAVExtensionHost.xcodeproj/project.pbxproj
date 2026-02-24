@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1B7227422F4E3E4300BAFC49 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1B7227412F4E3E4300BAFC49 /* AVFoundation.framework */; };
+		1B7227432F4E3E5100BAFC49 /* CoreMedia.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1BB087872C5B031A00758AE1 /* CoreMedia.framework */; };
+		1B7227442F4E3E5500BAFC49 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1BB087892C5B031F00758AE1 /* AVFoundation.framework */; };
+		1B7227452F4E3E5A00BAFC49 /* CoreVideo.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1BB087952C5B036A00758AE1 /* CoreVideo.framework */; };
+		1B7227462F4E3E5F00BAFC49 /* MediaToolbox.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1BB0878D2C5B033500758AE1 /* MediaToolbox.framework */; };
+		1B7227472F4E3E6400BAFC49 /* VideoToolbox.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1BB0878B2C5B032C00758AE1 /* VideoToolbox.framework */; };
 		1BAC24732C52FF960018E44F /* libcorecrypto.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 1BAC24712C52FF960018E44F /* libcorecrypto.tbd */; platformFilters = (macos, ); };
 		1BAC24742C52FF960018E44F /* libcommonCrypto.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 1BAC24722C52FF960018E44F /* libcommonCrypto.tbd */; platformFilters = (macos, ); };
 		1BAC24782C52FFFC0018E44F /* libz.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 1BAC24772C52FFFC0018E44F /* libz.tbd */; };
@@ -35,17 +41,18 @@
 		1BB0879A2C5B037500758AE1 /* AudioToolbox.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1BB087982C5B037500758AE1 /* AudioToolbox.framework */; };
 		1BB985EB2C5306FB005E59B7 /* libavutil.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 1BB985EA2C5306FB005E59B7 /* libavutil.a */; };
 		1BB986352C55EB09005E59B7 /* PLUGIN-NOTES.md in Resources */ = {isa = PBXBuildFile; fileRef = 1BB986342C55EB09005E59B7 /* PLUGIN-NOTES.md */; };
+		1BC0AA012F4F0A2B00FA7711 /* AVKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1BC0AA002F4F0A2B00FA7711 /* AVKit.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		1BACCBA72C52ACBF0018E44F /* PBXContainerItemProxy */ = {
+		1B7226E62F4E3BBB00BAFC49 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 1BACCB8D2C52ACBE0018E44F /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 1BACCB942C52ACBE0018E44F;
 			remoteInfo = LibAVExtensionHost;
 		};
-		1BACCBB12C52ACBF0018E44F /* PBXContainerItemProxy */ = {
+		1BACCBA72C52ACBF0018E44F /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 1BACCB8D2C52ACBE0018E44F /* Project object */;
 			proxyType = 1;
@@ -86,6 +93,8 @@
 
 /* Begin PBXFileReference section */
 		1B60C49D2C5B01E800758EE3 /* LibAVDebugSanitychecker */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = LibAVDebugSanitychecker; sourceTree = BUILT_PRODUCTS_DIR; };
+		1B7226E22F4E3BBB00BAFC49 /* LibAVExtensionIntegrationTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LibAVExtensionIntegrationTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		1B7227412F4E3E4300BAFC49 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.1.sdk/System/Library/Frameworks/AVFoundation.framework; sourceTree = DEVELOPER_DIR; };
 		1BAC24712C52FF960018E44F /* libcorecrypto.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libcorecrypto.tbd; path = usr/lib/system/libcorecrypto.tbd; sourceTree = SDKROOT; };
 		1BAC24722C52FF960018E44F /* libcommonCrypto.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libcommonCrypto.tbd; path = usr/lib/system/libcommonCrypto.tbd; sourceTree = SDKROOT; };
 		1BAC24752C52FFEC0018E44F /* libdz.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libdz.tbd; path = usr/lib/libdz.tbd; sourceTree = SDKROOT; };
@@ -94,7 +103,6 @@
 		1BAC247B2C5300630018E44F /* libiconv.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libiconv.tbd; path = usr/lib/libiconv.tbd; sourceTree = SDKROOT; };
 		1BACCB952C52ACBE0018E44F /* LibAVExtensionHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LibAVExtensionHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1BACCBA62C52ACBF0018E44F /* LibAVExtensionHostTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LibAVExtensionHostTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		1BACCBB02C52ACBF0018E44F /* LibAVExtensionHostUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LibAVExtensionHostUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1BACCBC72C52AE1D0018E44F /* LibAVExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = LibAVExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		1BACCBD72C52B9940018E44F /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		1BACCBDE2C52CFB30018E44F /* libavcodec.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libavcodec.a; path = ffmpeg/libavcodec/libavcodec.a; sourceTree = "<group>"; };
@@ -111,6 +119,7 @@
 		1BB087982C5B037500758AE1 /* AudioToolbox.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AudioToolbox.framework; path = System/Library/Frameworks/AudioToolbox.framework; sourceTree = SDKROOT; };
 		1BB985EA2C5306FB005E59B7 /* libavutil.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libavutil.a; sourceTree = "<group>"; };
 		1BB986342C55EB09005E59B7 /* PLUGIN-NOTES.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "PLUGIN-NOTES.md"; sourceTree = "<group>"; };
+		1BC0AA002F4F0A2B00FA7711 /* AVKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVKit.framework; path = System/Library/Frameworks/AVKit.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -126,6 +135,7 @@
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		1B60C49E2C5B01E800758EE3 /* LibAVDebugSanitychecker */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = LibAVDebugSanitychecker; sourceTree = "<group>"; };
+		1B7226E32F4E3BBB00BAFC49 /* LibAVExtensionIntegrationTests */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = LibAVExtensionIntegrationTests; sourceTree = "<group>"; };
 		1BACCB972C52ACBE0018E44F /* LibAVExtensionHost */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = LibAVExtensionHost; sourceTree = "<group>"; };
 		1BACCBA92C52ACBF0018E44F /* LibAVExtensionHostTests */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = LibAVExtensionHostTests; sourceTree = "<group>"; };
 		1BACCBB32C52ACBF0018E44F /* LibAVExtensionHostUITests */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = LibAVExtensionHostUITests; sourceTree = "<group>"; };
@@ -157,21 +167,23 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		1B7226DF2F4E3BBB00BAFC49 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		1BACCB922C52ACBE0018E44F /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1B7227422F4E3E4300BAFC49 /* AVFoundation.framework in Frameworks */,
+				1BC0AA012F4F0A2B00FA7711 /* AVKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		1BACCBA32C52ACBF0018E44F /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		1BACCBAD2C52ACBF0018E44F /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -183,12 +195,17 @@
 			buildActionMask = 2147483647;
 			files = (
 				1BB985EB2C5306FB005E59B7 /* libavutil.a in Frameworks */,
+				1B7227472F4E3E6400BAFC49 /* VideoToolbox.framework in Frameworks */,
 				1BAC247C2C5300630018E44F /* libiconv.tbd in Frameworks */,
+				1B7227442F4E3E5500BAFC49 /* AVFoundation.framework in Frameworks */,
 				1BAC247A2C5300380018E44F /* libbz2.tbd in Frameworks */,
+				1B7227432F4E3E5100BAFC49 /* CoreMedia.framework in Frameworks */,
 				1BAC24782C52FFFC0018E44F /* libz.tbd in Frameworks */,
 				1BAC24732C52FF960018E44F /* libcorecrypto.tbd in Frameworks */,
 				1BAC24742C52FF960018E44F /* libcommonCrypto.tbd in Frameworks */,
 				1BACCBDF2C52CFCA0018E44F /* libavcodec.a in Frameworks */,
+				1B7227462F4E3E5F00BAFC49 /* MediaToolbox.framework in Frameworks */,
+				1B7227452F4E3E5A00BAFC49 /* CoreVideo.framework in Frameworks */,
 				1BACCBE12C52CFE40018E44F /* libavformat.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -206,6 +223,7 @@
 				1BACCBB32C52ACBF0018E44F /* LibAVExtensionHostUITests */,
 				1BACCBC82C52AE1D0018E44F /* LibAVExtension */,
 				1B60C49E2C5B01E800758EE3 /* LibAVDebugSanitychecker */,
+				1B7226E32F4E3BBB00BAFC49 /* LibAVExtensionIntegrationTests */,
 				1BACCB962C52ACBE0018E44F /* Products */,
 				1BACCBDB2C52CF650018E44F /* Frameworks */,
 			);
@@ -216,9 +234,9 @@
 			children = (
 				1BACCB952C52ACBE0018E44F /* LibAVExtensionHost.app */,
 				1BACCBA62C52ACBF0018E44F /* LibAVExtensionHostTests.xctest */,
-				1BACCBB02C52ACBF0018E44F /* LibAVExtensionHostUITests.xctest */,
 				1BACCBC72C52AE1D0018E44F /* LibAVExtension.appex */,
 				1B60C49D2C5B01E800758EE3 /* LibAVDebugSanitychecker */,
+				1B7226E22F4E3BBB00BAFC49 /* LibAVExtensionIntegrationTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -226,6 +244,7 @@
 		1BACCBDB2C52CF650018E44F /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				1B7227412F4E3E4300BAFC49 /* AVFoundation.framework */,
 				1BB087982C5B037500758AE1 /* AudioToolbox.framework */,
 				1BB087972C5B037500758AE1 /* AudioUnit.framework */,
 				1BB087952C5B036A00758AE1 /* CoreVideo.framework */,
@@ -235,6 +254,7 @@
 				1BB0878D2C5B033500758AE1 /* MediaToolbox.framework */,
 				1BB0878B2C5B032C00758AE1 /* VideoToolbox.framework */,
 				1BB087892C5B031F00758AE1 /* AVFoundation.framework */,
+				1BC0AA002F4F0A2B00FA7711 /* AVKit.framework */,
 				1BB087872C5B031A00758AE1 /* CoreMedia.framework */,
 				1BAC247B2C5300630018E44F /* libiconv.tbd */,
 				1BAC24792C5300380018E44F /* libbz2.tbd */,
@@ -273,6 +293,29 @@
 			productName = LibAVDebugSanitychecker;
 			productReference = 1B60C49D2C5B01E800758EE3 /* LibAVDebugSanitychecker */;
 			productType = "com.apple.product-type.tool";
+		};
+		1B7226E12F4E3BBB00BAFC49 /* LibAVExtensionIntegrationTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1B7226EA2F4E3BBB00BAFC49 /* Build configuration list for PBXNativeTarget "LibAVExtensionIntegrationTests" */;
+			buildPhases = (
+				1B7226DE2F4E3BBB00BAFC49 /* Sources */,
+				1B7226DF2F4E3BBB00BAFC49 /* Frameworks */,
+				1B7226E02F4E3BBB00BAFC49 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1B7226E72F4E3BBB00BAFC49 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				1B7226E32F4E3BBB00BAFC49 /* LibAVExtensionIntegrationTests */,
+			);
+			name = LibAVExtensionIntegrationTests;
+			packageProductDependencies = (
+			);
+			productName = LibAVExtensionIntegrationTests;
+			productReference = 1B7226E22F4E3BBB00BAFC49 /* LibAVExtensionIntegrationTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
 		};
 		1BACCB942C52ACBE0018E44F /* LibAVExtensionHost */ = {
 			isa = PBXNativeTarget;
@@ -321,29 +364,6 @@
 			productReference = 1BACCBA62C52ACBF0018E44F /* LibAVExtensionHostTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		1BACCBAF2C52ACBF0018E44F /* LibAVExtensionHostUITests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 1BACCBC02C52ACBF0018E44F /* Build configuration list for PBXNativeTarget "LibAVExtensionHostUITests" */;
-			buildPhases = (
-				1BACCBAC2C52ACBF0018E44F /* Sources */,
-				1BACCBAD2C52ACBF0018E44F /* Frameworks */,
-				1BACCBAE2C52ACBF0018E44F /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				1BACCBB22C52ACBF0018E44F /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				1BACCBB32C52ACBF0018E44F /* LibAVExtensionHostUITests */,
-			);
-			name = LibAVExtensionHostUITests;
-			packageProductDependencies = (
-			);
-			productName = LibAVExtensionHostUITests;
-			productReference = 1BACCBB02C52ACBF0018E44F /* LibAVExtensionHostUITests.xctest */;
-			productType = "com.apple.product-type.bundle.ui-testing";
-		};
 		1BACCBC62C52AE1D0018E44F /* LibAVExtension */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 1BACCBD12C52AE1D0018E44F /* Build configuration list for PBXNativeTarget "LibAVExtension" */;
@@ -373,20 +393,20 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 1600;
+				LastSwiftUpdateCheck = 2610;
 				LastUpgradeCheck = 1600;
 				TargetAttributes = {
 					1B60C49C2C5B01E800758EE3 = {
 						CreatedOnToolsVersion = 16.0;
 					};
+					1B7226E12F4E3BBB00BAFC49 = {
+						CreatedOnToolsVersion = 26.1.1;
+						TestTargetID = 1BACCB942C52ACBE0018E44F;
+					};
 					1BACCB942C52ACBE0018E44F = {
 						CreatedOnToolsVersion = 16.0;
 					};
 					1BACCBA52C52ACBF0018E44F = {
-						CreatedOnToolsVersion = 16.0;
-						TestTargetID = 1BACCB942C52ACBE0018E44F;
-					};
-					1BACCBAF2C52ACBF0018E44F = {
 						CreatedOnToolsVersion = 16.0;
 						TestTargetID = 1BACCB942C52ACBE0018E44F;
 					};
@@ -411,14 +431,21 @@
 			targets = (
 				1BACCB942C52ACBE0018E44F /* LibAVExtensionHost */,
 				1BACCBA52C52ACBF0018E44F /* LibAVExtensionHostTests */,
-				1BACCBAF2C52ACBF0018E44F /* LibAVExtensionHostUITests */,
 				1BACCBC62C52AE1D0018E44F /* LibAVExtension */,
 				1B60C49C2C5B01E800758EE3 /* LibAVDebugSanitychecker */,
+				1B7226E12F4E3BBB00BAFC49 /* LibAVExtensionIntegrationTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		1B7226E02F4E3BBB00BAFC49 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		1BACCB932C52ACBE0018E44F /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -427,13 +454,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		1BACCBA42C52ACBF0018E44F /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		1BACCBAE2C52ACBF0018E44F /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -459,6 +479,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		1B7226DE2F4E3BBB00BAFC49 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		1BACCB912C52ACBE0018E44F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -467,13 +494,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		1BACCBA22C52ACBF0018E44F /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		1BACCBAC2C52ACBF0018E44F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -490,15 +510,15 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		1B7226E72F4E3BBB00BAFC49 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 1BACCB942C52ACBE0018E44F /* LibAVExtensionHost */;
+			targetProxy = 1B7226E62F4E3BBB00BAFC49 /* PBXContainerItemProxy */;
+		};
 		1BACCBA82C52ACBF0018E44F /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 1BACCB942C52ACBE0018E44F /* LibAVExtensionHost */;
 			targetProxy = 1BACCBA72C52ACBF0018E44F /* PBXContainerItemProxy */;
-		};
-		1BACCBB22C52ACBF0018E44F /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = 1BACCB942C52ACBE0018E44F /* LibAVExtensionHost */;
-			targetProxy = 1BACCBB12C52ACBF0018E44F /* PBXContainerItemProxy */;
 		};
 		1BACCBCE2C52AE1D0018E44F /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -555,6 +575,46 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		1B7226E82F4E3BBB00BAFC49 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SHG3AW6YV7;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.7;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = graphics.fabric.LibAVExtensionIntegrationTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		1B7226E92F4E3BBB00BAFC49 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SHG3AW6YV7;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.7;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = graphics.fabric.LibAVExtensionIntegrationTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
 		};
@@ -796,50 +856,6 @@
 			};
 			name = Release;
 		};
-		1BACCBC12C52ACBF0018E44F /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = SHG3AW6YV7;
-				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = info.vade.LibAVExtensionHostUITests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = auto;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2,7";
-				TEST_TARGET_NAME = LibAVExtensionHost;
-				XROS_DEPLOYMENT_TARGET = 2.0;
-			};
-			name = Debug;
-		};
-		1BACCBC22C52ACBF0018E44F /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = SHG3AW6YV7;
-				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = info.vade.LibAVExtensionHostUITests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = auto;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2,7";
-				TEST_TARGET_NAME = LibAVExtensionHost;
-				XROS_DEPLOYMENT_TARGET = 2.0;
-			};
-			name = Release;
-		};
 		1BACCBD22C52AE1D0018E44F /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -941,6 +957,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		1B7226EA2F4E3BBB00BAFC49 /* Build configuration list for PBXNativeTarget "LibAVExtensionIntegrationTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1B7226E82F4E3BBB00BAFC49 /* Debug */,
+				1B7226E92F4E3BBB00BAFC49 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		1BACCB902C52ACBE0018E44F /* Build configuration list for PBXProject "LibAVExtensionHost" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -964,15 +989,6 @@
 			buildConfigurations = (
 				1BACCBBE2C52ACBF0018E44F /* Debug */,
 				1BACCBBF2C52ACBF0018E44F /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		1BACCBC02C52ACBF0018E44F /* Build configuration list for PBXNativeTarget "LibAVExtensionHostUITests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				1BACCBC12C52ACBF0018E44F /* Debug */,
-				1BACCBC22C52ACBF0018E44F /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

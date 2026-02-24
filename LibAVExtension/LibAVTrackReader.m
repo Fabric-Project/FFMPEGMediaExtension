@@ -26,6 +26,27 @@
 
 @implementation LibAVTrackReader
 
+static NSString *LibAVTrackTimeString(CMTime time)
+{
+    if (CMTIME_IS_INVALID(time))
+    {
+        return @"{invalid}";
+    }
+    if (CMTIME_IS_POSITIVE_INFINITY(time))
+    {
+        return @"{+inf}";
+    }
+    if (CMTIME_IS_NEGATIVE_INFINITY(time))
+    {
+        return @"{-inf}";
+    }
+    if (CMTIME_IS_INDEFINITE(time))
+    {
+        return @"{indefinite}";
+    }
+    return [NSString stringWithFormat:@"{%lld/%d = %.6f}", time.value, time.timescale, CMTimeGetSeconds(time)];
+}
+
 - (instancetype) initWithFormatReader:(LibAVFormatReader*)formatReader stream:(AVStream*)stream atIndex:(int)index;
 {
     self = [super init];
@@ -45,44 +66,86 @@
 
 - (void)generateSampleCursorAtFirstSampleInDecodeOrderWithCompletionHandler:(nonnull void (^)(id<MESampleCursor> _Nullable, NSError * _Nullable))completionHandler
 {
-    NSLog(@"LibAVTrackReader generateSampleCursorAtFirstSampleInDecodeOrderWithCompletionHandler");
+    NSLog(@"LibAVTrackReader generateSampleCursorAtFirstSampleInDecodeOrder requested streamIndex=%d", self.streamIndex);
     
     LibAVSampleCursor* sampleCursor = [[LibAVSampleCursor alloc] initWithTrackReader:self pts:kCMTimeZero];
     if (sampleCursor == nil)
     {
+        NSLog(@"LibAVTrackReader generateSampleCursorAtFirstSampleInDecodeOrder FAILED streamIndex=%d", self.streamIndex);
         completionHandler(nil, [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorInternalFailure userInfo:nil]);
         return;
     }
 
+    NSLog(@"LibAVTrackReader generateSampleCursorAtFirstSampleInDecodeOrder READY cursor=%p pts=%@ dts=%@",
+          sampleCursor,
+          LibAVTrackTimeString(sampleCursor.presentationTimeStamp),
+          LibAVTrackTimeString(sampleCursor.decodeTimeStamp));
     completionHandler(sampleCursor, nil);
 }
 
 - (void)generateSampleCursorAtLastSampleInDecodeOrderWithCompletionHandler:(nonnull void (^)(id<MESampleCursor> _Nullable, NSError * _Nullable))completionHandler
 {
-    NSLog(@"LibAVTrackReader generateSampleCursorAtLastSampleInDecodeOrderWithCompletionHandler");
+    NSLog(@"LibAVTrackReader generateSampleCursorAtLastSampleInDecodeOrder requested streamIndex=%d duration=%@",
+          self.streamIndex,
+          LibAVTrackTimeString(self.formatReader.duration));
 
     LibAVSampleCursor* sampleCursor = [[LibAVSampleCursor alloc] initWithTrackReader:self pts:self.formatReader.duration];
     if (sampleCursor == nil)
     {
+        NSLog(@"LibAVTrackReader generateSampleCursorAtLastSampleInDecodeOrder FAILED streamIndex=%d", self.streamIndex);
         completionHandler(nil, [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorNoSamples userInfo:nil]);
         return;
     }
 
+    NSLog(@"LibAVTrackReader generateSampleCursorAtLastSampleInDecodeOrder READY cursor=%p pts=%@ dts=%@",
+          sampleCursor,
+          LibAVTrackTimeString(sampleCursor.presentationTimeStamp),
+          LibAVTrackTimeString(sampleCursor.decodeTimeStamp));
     completionHandler(sampleCursor, nil);
 }
 
 // Provides a new MESampleCursor object pointing to the sample at or near the specified presentation timestamp.
 - (void)generateSampleCursorAtPresentationTimeStamp:(CMTime)presentationTimeStamp completionHandler:(nonnull void (^)(id<MESampleCursor> _Nullable, NSError * _Nullable))completionHandler
 {
-    NSLog(@"LibAVTrackReader generateSampleCursorAtPresentationTimeStamp %@", CMTimeCopyDescription(kCFAllocatorDefault, presentationTimeStamp));
+    NSLog(@"LibAVTrackReader generateSampleCursorAtPresentationTimeStamp requested streamIndex=%d requestedPTS=%@",
+          self.streamIndex,
+          LibAVTrackTimeString(presentationTimeStamp));
 
     LibAVSampleCursor* sampleCursor = [[LibAVSampleCursor alloc] initWithTrackReader:self pts:presentationTimeStamp];
+    if (sampleCursor == nil && CMTIME_IS_POSITIVE_INFINITY(presentationTimeStamp))
+    {
+        CMTime fallbackPTS = self.formatReader.duration;
+        if (!CMTIME_IS_NUMERIC(fallbackPTS))
+        {
+            fallbackPTS = kCMTimeZero;
+        }
+
+        NSLog(@"LibAVTrackReader generateSampleCursorAtPresentationTimeStamp fallback for +inf streamIndex=%d fallbackPTS=%@",
+              self.streamIndex,
+              LibAVTrackTimeString(fallbackPTS));
+
+        sampleCursor = [[LibAVSampleCursor alloc] initWithTrackReader:self pts:fallbackPTS];
+
+        if (sampleCursor == nil)
+        {
+            NSLog(@"LibAVTrackReader generateSampleCursorAtPresentationTimeStamp fallback-to-zero streamIndex=%d", self.streamIndex);
+            sampleCursor = [[LibAVSampleCursor alloc] initWithTrackReader:self pts:kCMTimeZero];
+        }
+    }
     if (sampleCursor == nil)
     {
+        NSLog(@"LibAVTrackReader generateSampleCursorAtPresentationTimeStamp FAILED streamIndex=%d requestedPTS=%@",
+              self.streamIndex,
+              LibAVTrackTimeString(presentationTimeStamp));
         completionHandler(nil, [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorNoSamples userInfo:nil]);
         return;
     }
 
+    NSLog(@"LibAVTrackReader generateSampleCursorAtPresentationTimeStamp READY cursor=%p requestedPTS=%@ cursorPTS=%@ cursorDTS=%@",
+          sampleCursor,
+          LibAVTrackTimeString(presentationTimeStamp),
+          LibAVTrackTimeString(sampleCursor.presentationTimeStamp),
+          LibAVTrackTimeString(sampleCursor.decodeTimeStamp));
     completionHandler(sampleCursor, nil);
 }
 

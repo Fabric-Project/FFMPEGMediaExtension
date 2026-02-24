@@ -113,6 +113,12 @@ run_ffmpeg "baseline_${SIZE_TAG}_${FPS}fps_h264_aac.mkv" \
   -c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p \
   -c:a aac -b:a 192k
 
+# MKV/H.264 all-I + AAC (no B/P frames; PTS should match DTS for video samples)
+run_ffmpeg "baseline_${SIZE_TAG}_${FPS}fps_h264_alli_aac.mkv" \
+  -c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p \
+  -g 1 -keyint_min 1 -bf 0 -sc_threshold 0 \
+  -c:a aac -b:a 192k
+
 # MKV/VP9 + Opus
 run_ffmpeg "baseline_${SIZE_TAG}_${FPS}fps_vp9_opus.mkv" \
   -c:v libvpx-vp9 -row-mt 1 -crf 33 -b:v 0 -pix_fmt yuv420p \
