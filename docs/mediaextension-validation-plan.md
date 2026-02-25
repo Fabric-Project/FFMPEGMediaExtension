@@ -112,3 +112,7 @@ Establish a repeatable validation workflow for the MediaExtension plugin so we c
 2. Confirm `decodeTimeOfLastSampleReachable...` semantics against runtime behavior.
 3. Lock one stable sample data path first (prefer location path for contiguous samples), then keep direct buffer path as fallback.
 
+## Deferred TODOs (Post-Correctness)
+1. Investigate play/pause latency (pause continues briefly) as a likely host buffering/queue-depth behavior.
+2. Measure extension-side lookahead/sample-queue depth during pause and resume.
+3. Tune buffering only after correctness is fully stable (no timeline regressions, no black frames, deterministic cursor behavior).

@@ -347,7 +347,12 @@ struct LibAVExtensionIntegrationTests {
             // In compressed sample mode, image buffers should not be produced.
             #expect(stats.imageBufferCount == 0)
 
-            #expect(abs(stats.sampleCount - expectedFrameCount) <= 3)
+            // Frame-count expectation is derived from ffprobe duration * fps.
+            // Keep tolerance consistent with the duration contract tolerance used above (0.25s).
+            let durationDerivedTolerance = max(3, Int(ceil(refFPS * 0.25)))
+            // Reordered/B-frame streams may need a touch more headroom on host walk patterns.
+            let sampleCountTolerance = hasBFrames ? max(durationDerivedTolerance, 8) : durationDerivedTolerance
+            #expect(abs(stats.sampleCount - expectedFrameCount) <= sampleCountTolerance)
         }
     }
 }

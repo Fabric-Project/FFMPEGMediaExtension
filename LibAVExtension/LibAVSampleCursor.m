@@ -49,19 +49,29 @@ static BOOL LibAVBufferHasAnnexBStartCode(const uint8_t *data, size_t size)
         return NO;
     }
 
-    for (size_t i = 0; i + 3 < size; i++)
+    // Annex-B detection must anchor at packet start (allowing only leading zero bytes).
+    // Searching anywhere in payload causes AVCC packets to be misclassified when RBSP data
+    // happens to contain 00 00 01 by chance.
+    size_t i = 0;
+    while (i < size && data[i] == 0x00)
     {
-        if (data[i] == 0x00 && data[i + 1] == 0x00)
-        {
-            if (data[i + 2] == 0x01)
-            {
-                return YES;
-            }
-            if ((i + 3 < size) && data[i + 2] == 0x00 && data[i + 3] == 0x01)
-            {
-                return YES;
-            }
-        }
+        i += 1;
+    }
+
+    // If first non-zero byte is 0x01 and we had at least two leading zeros, it's Annex-B.
+    if (i >= 2 && i < size && data[i] == 0x01)
+    {
+        return YES;
+    }
+
+    // Also accept exact prefix without extra leading zeros.
+    if (size >= 4 && data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x00 && data[3] == 0x01)
+    {
+        return YES;
+    }
+    if (size >= 3 && data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x01)
+    {
+        return YES;
     }
     return NO;
 }
@@ -89,6 +99,8 @@ static BOOL LibAVBufferHasAnnexBStartCode(const uint8_t *data, size_t size)
 @property (nonatomic, readwrite, assign) int64_t debugOpID;
 @property (nonatomic, readwrite, copy) NSString * _Nullable debugOpName;
 @property (nonatomic, readwrite, assign) LibAVCursorStepTimeline debugTimeline;
+@property (nonatomic, readwrite) CMTime lastDeliveredDecodeTimeStamp;
+@property (nonatomic, readwrite, assign) int64_t deliveredSampleAuditCount;
 
 - (BOOL)trackLikelyHasReorderedPresentation;
 - (void)alignToSourceSampleLocation:(LibAVSampleCursor *)source;
@@ -96,6 +108,26 @@ static BOOL LibAVBufferHasAnnexBStartCode(const uint8_t *data, size_t size)
 - (NSString *)debugTracePrefix;
 - (int)h264NALLengthFieldSize;
 - (NSData * _Nullable)h264ConvertAnnexBToAVCCData:(const uint8_t *)bytes size:(size_t)size;
+- (BOOL)h264LooksLikeAVCCData:(const uint8_t *)bytes
+                         size:(size_t)size
+              lengthFieldSize:(int)lengthFieldSize;
+- (int)h264DetectAVCCLengthFieldSize:(const uint8_t *)bytes
+                                size:(size_t)size;
+- (NSData * _Nullable)h264RepackAVCCData:(const uint8_t *)bytes
+                                     size:(size_t)size
+                       sourceLengthFieldSize:(int)sourceLengthFieldSize
+                    destinationLengthFieldSize:(int)destinationLengthFieldSize;
+- (NSData * _Nullable)h264WrapSingleNALAsAVCCData:(const uint8_t *)bytes
+                                             size:(size_t)size
+                                  lengthFieldSize:(int)lengthFieldSize;
+- (NSString *)h264AuditSummaryForBytes:(const uint8_t *)bytes
+                                  size:(size_t)size
+                              isAVCC:(BOOL)isAVCC;
+- (void)logSampleAuditForPacket:(const AVPacket *)packet
+                   sampleBuffer:(CMSampleBufferRef)sampleBuffer
+                    sampleBytes:(const uint8_t *)sampleBytes
+                     packetSize:(size_t)packetSize
+                         isAVCC:(BOOL)isAVCC;
 
 @end
 
@@ -108,6 +140,7 @@ static BOOL LibAVBufferHasAnnexBStartCode(const uint8_t *data, size_t size)
 }
 
 static int64_t gLibAVCursorDebugOpCounter = 0;
+static int64_t gLibAVCursorGlobalSampleEmitCounter = 0;
 
 #pragma mark - FFmpeg I/O callbacks
 
@@ -207,6 +240,8 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
         self.debugOpID = 0;
         self.debugOpName = @"init";
         self.debugTimeline = LibAVCursorStepTimelinePresentation;
+        self.lastDeliveredDecodeTimeStamp = kCMTimeInvalid;
+        self.deliveredSampleAuditCount = 0;
 
         [self beginDebugOp:@"initWithPTS" timeline:LibAVCursorStepTimelinePresentation];
         NSLog(@"[LibAVSampleCursor %p %@] init requestedPTS=%@", self, [self debugTracePrefix], LibAVTimeString(pts));
@@ -425,20 +460,9 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
 
 - (BOOL)samplesWithEarlierDTSsMayHaveLaterPTSsThanCursor:(id<MESampleCursor>)cursor
 {
-    BOOL selfHasPTSDTSDelta = CMTIME_IS_NUMERIC(self.presentationTimeStamp) &&
-                              CMTIME_IS_NUMERIC(self.decodeTimeStamp) &&
-                              CMTIME_COMPARE_INLINE(self.presentationTimeStamp, !=, self.decodeTimeStamp);
-    BOOL otherHasPTSDTSDelta = NO;
-    if (cursor != nil)
-    {
-        CMTime otherPTS = cursor.presentationTimeStamp;
-        CMTime otherDTS = cursor.decodeTimeStamp;
-        otherHasPTSDTSDelta = CMTIME_IS_NUMERIC(otherPTS) &&
-                              CMTIME_IS_NUMERIC(otherDTS) &&
-                              CMTIME_COMPARE_INLINE(otherPTS, !=, otherDTS);
-    }
-
-    BOOL reordered = (selfHasPTSDTSDelta || otherHasPTSDTSDelta) ? [self trackLikelyHasReorderedPresentation] : NO;
+    // Advertise stream-level reordering capability consistently. Waiting to "observe"
+    // PTS!=DTS at the current cursor can mislead host policy at startup/keyframe regions.
+    BOOL reordered = [self trackLikelyHasReorderedPresentation];
     NSLog(@"[LibAVSampleCursor %p %@] query earlierDTSLaterPTSThan cursor=%p -> %d",
           self,
           [self debugTracePrefix],
@@ -449,20 +473,9 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
 
 - (BOOL)samplesWithLaterDTSsMayHaveEarlierPTSsThanCursor:(id<MESampleCursor>)cursor
 {
-    BOOL selfHasPTSDTSDelta = CMTIME_IS_NUMERIC(self.presentationTimeStamp) &&
-                              CMTIME_IS_NUMERIC(self.decodeTimeStamp) &&
-                              CMTIME_COMPARE_INLINE(self.presentationTimeStamp, !=, self.decodeTimeStamp);
-    BOOL otherHasPTSDTSDelta = NO;
-    if (cursor != nil)
-    {
-        CMTime otherPTS = cursor.presentationTimeStamp;
-        CMTime otherDTS = cursor.decodeTimeStamp;
-        otherHasPTSDTSDelta = CMTIME_IS_NUMERIC(otherPTS) &&
-                              CMTIME_IS_NUMERIC(otherDTS) &&
-                              CMTIME_COMPARE_INLINE(otherPTS, !=, otherDTS);
-    }
-
-    BOOL reordered = (selfHasPTSDTSDelta || otherHasPTSDTSDelta) ? [self trackLikelyHasReorderedPresentation] : NO;
+    // Advertise stream-level reordering capability consistently. Waiting to "observe"
+    // PTS!=DTS at the current cursor can mislead host policy at startup/keyframe regions.
+    BOOL reordered = [self trackLikelyHasReorderedPresentation];
     NSLog(@"[LibAVSampleCursor %p %@] query laterDTSEarlierPTSThan cursor=%p -> %d",
           self,
           [self debugTracePrefix],
@@ -515,11 +528,20 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
         return;
     }
 
-    if (endSampleCursor != nil && CMTIME_COMPARE_INLINE(endSampleCursor.presentationTimeStamp, <, self.presentationTimeStamp))
+    if (endSampleCursor != nil)
     {
-        NSError *error = [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorNoSamples userInfo:nil];
-        completionHandler(nil, error);
-        return;
+        // Validate "end before start" only in decode order. Presentation timestamps can
+        // legitimately move backward on reordered GOP streams and must not cause NO_SAMPLES.
+        CMTime endDTS = endSampleCursor.decodeTimeStamp;
+        CMTime startDTS = self.decodeTimeStamp;
+        if (CMTIME_IS_NUMERIC(endDTS) &&
+            CMTIME_IS_NUMERIC(startDTS) &&
+            CMTIME_COMPARE_INLINE(endDTS, <, startDTS))
+        {
+            NSError *error = [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorNoSamples userInfo:nil];
+            completionHandler(nil, error);
+            return;
+        }
     }
 
     if (![self currentPacketHasValidData])
@@ -527,6 +549,25 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
         NSError *error = [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorNoSamples userInfo:nil];
         completionHandler(nil, error);
         return;
+    }
+
+    if ([self trackLikelyHasReorderedPresentation] &&
+        CMTIME_IS_NUMERIC(self.lastDeliveredDecodeTimeStamp) &&
+        CMTIME_IS_NUMERIC(self.decodeTimeStamp) &&
+        CMTIME_COMPARE_INLINE(self.decodeTimeStamp, <=, self.lastDeliveredDecodeTimeStamp))
+    {
+        CMTime step = CMTIME_IS_NUMERIC(self.currentSampleDuration) &&
+                      CMTIME_COMPARE_INLINE(self.currentSampleDuration, >, kCMTimeZero)
+                        ? self.currentSampleDuration
+                        : [self fallbackSampleDuration];
+        CMTime adjusted = CMTimeAdd(self.lastDeliveredDecodeTimeStamp, step);
+        NSLog(@"[LibAVSampleCursor %p %@] decodeAudit adjusted non-forward DTS old=%@ lastDelivered=%@ new=%@",
+              self,
+              [self debugTracePrefix],
+              LibAVTimeString(self.decodeTimeStamp),
+              LibAVTimeString(self.lastDeliveredDecodeTimeStamp),
+              LibAVTimeString(adjusted));
+        self.decodeTimeStamp = adjusted;
     }
 
     CMSampleBufferRef sampleBuffer = [self createSampleBufferFromPacket:_packet];
@@ -539,6 +580,7 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
 
     // Ownership is transferred to the consumer via completion callback.
     completionHandler(sampleBuffer, nil);
+    self.lastDeliveredDecodeTimeStamp = self.decodeTimeStamp;
     NSLog(@"[LibAVSampleCursor %p %@] loadSampleBuffer delivered pts=%@ dts=%@ dur=%@ size=%zu",
           self,
           [self debugTracePrefix],
@@ -681,7 +723,7 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
         }
         self.decodeTimeStamp = kCMTimeInvalid;
         self.presentationTimeStamp = kCMTimeInvalid;
-        self.pendingDecodeAnchorTime = normalizedTime;
+        self.pendingDecodeAnchorTime = kCMTimeInvalid;
     }
 
     (void)timeline;
@@ -876,18 +918,11 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
             av_packet_unref(_packet);
             if (av_packet_ref(_packet, selectedPacket) == 0)
             {
-                int streamIndex = self.trackReader.streamIndex - 1;
-                AVRational timeBase = {1, 1000000};
-                if (_cursorFormatCtx != NULL && streamIndex >= 0 && streamIndex < (int)_cursorFormatCtx->nb_streams)
-                {
-                    timeBase = _cursorFormatCtx->streams[streamIndex]->time_base;
-                }
                 // We are explicitly repositioning to a selected packet.
-                // Re-anchor decode timeline to the selected packet's presentation point so
-                // packets with missing DTS do not become "invalid" at init/copy boundaries.
-                CMTime selectedPTS = [self cmTimeFromTimestamp:selectedPacket->pts timeBase:timeBase];
+                // Clear decode anchor state so stale scan-end decode values do not bleed into
+                // synthesized decode timestamps for the selected packet.
                 self.decodeTimeStamp = kCMTimeInvalid;
-                self.pendingDecodeAnchorTime = CMTIME_IS_NUMERIC(selectedPTS) ? selectedPTS : normalizedTarget;
+                self.pendingDecodeAnchorTime = kCMTimeInvalid;
                 [self updateStateForPacket:_packet];
             }
         }
@@ -965,37 +1000,30 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
     }
     self.currentSampleDuration = duration;
 
-    // Keep decode and presentation timelines independent.
-    if (CMTIME_IS_NUMERIC(packetDTS))
+    // Decode timeline should preserve demux-provided DTS whenever available.
+    // Only synthesize when container DTS is actually missing (AV_NOPTS_VALUE).
+    CMTime nextMonotonicDecode = kCMTimeInvalid;
+    if (CMTIME_IS_NUMERIC(previousDecode) &&
+        CMTIME_IS_NUMERIC(duration) &&
+        CMTIME_COMPARE_INLINE(duration, >, kCMTimeZero))
     {
-        CMTime decodeCandidate = packetDTS;
-        // Some streams start with NOPTS packets then later expose small DTS values.
-        // Prevent decode timeline regressions that can trigger host livelock.
-        if (CMTIME_IS_NUMERIC(previousDecode) && CMTIME_COMPARE_INLINE(decodeCandidate, <=, previousDecode))
-        {
-            CMTime step = CMTIME_IS_NUMERIC(duration) && CMTIME_COMPARE_INLINE(duration, >, kCMTimeZero)
-                ? duration
-                : [self fallbackSampleDuration];
-            decodeCandidate = CMTimeAdd(previousDecode, step);
-        }
-        self.decodeTimeStamp = decodeCandidate;
-        self.pendingDecodeAnchorTime = kCMTimeInvalid;
+        nextMonotonicDecode = CMTimeAdd(previousDecode, duration);
     }
-    else
+
+    CMTime chosenDecode = packetDTS;
+    if (!CMTIME_IS_NUMERIC(chosenDecode))
     {
-        if (CMTIME_IS_NUMERIC(self.decodeTimeStamp))
-        {
-            self.decodeTimeStamp = CMTimeAdd(self.decodeTimeStamp, duration);
-        }
-        else if (CMTIME_IS_NUMERIC(self.pendingDecodeAnchorTime))
-        {
-            self.decodeTimeStamp = self.pendingDecodeAnchorTime;
-        }
-        else
-        {
-            self.decodeTimeStamp = kCMTimeInvalid;
-        }
+        chosenDecode = nextMonotonicDecode;
     }
+
+    if (!CMTIME_IS_NUMERIC(chosenDecode))
+    {
+        // Final fallback only when neither packet DTS nor monotonic synthesis is possible.
+        chosenDecode = CMTIME_IS_NUMERIC(packetPTS) ? packetPTS : kCMTimeInvalid;
+    }
+
+    self.decodeTimeStamp = chosenDecode;
+    self.pendingDecodeAnchorTime = kCMTimeInvalid;
 
     if (CMTIME_IS_NUMERIC(self.decodeTimeStamp) && CMTIME_IS_VALID(self.trackReader.formatReader.duration))
     {
@@ -1256,8 +1284,8 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
                 continue;
             }
 
-            BOOL useLinearDemuxStep = ![self trackLikelyHasReorderedPresentation];
-            if (useLinearDemuxStep)
+            BOOL reorderedPresentation = [self trackLikelyHasReorderedPresentation];
+            if (!reorderedPresentation)
             {
                 int readResult = [self readNextPacketForTrack];
                 if (readResult < 0)
@@ -1276,67 +1304,148 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
                 continue;
             }
 
-            // Reordered streams (e.g. AVC/HEVC): advance by presentation timeline.
+            // Reordered streams (e.g. AVC/HEVC): find the NEXT presentation sample by
+            // scanning forward in decode order and choosing the minimum PTS greater than
+            // current PTS inside a bounded lookahead window.
             CMTime startPTS = self.presentationTimeStamp;
-            CMTime duration = CMTIME_IS_NUMERIC(self.currentSampleDuration) && CMTIME_COMPARE_INLINE(self.currentSampleDuration, >, kCMTimeZero)
-                ? self.currentSampleDuration
-                : [self fallbackSampleDuration];
-            CMTime target = CMTIME_IS_NUMERIC(startPTS) ? CMTimeAdd(startPTS, duration) : duration;
-            if (CMTIME_IS_VALID(self.trackReader.formatReader.duration))
+            AVPacket *bestPacket = av_packet_alloc();
+            if (bestPacket == NULL)
             {
-                CMTimeRange range = CMTimeRangeMake(kCMTimeZero, self.trackReader.formatReader.duration);
-                target = CMTimeClampToRange(target, range);
-            }
-
-            int seekResult = [self seekToPTS:target];
-            if (seekResult < 0)
-            {
-                completionHandler(actualStepCount, [self libAVFormatErrorFrom:seekResult]);
+                completionHandler(actualStepCount, [NSError errorWithDomain:MediaExtensionErrorDomain
+                                                                        code:MEErrorInternalFailure
+                                                                    userInfo:nil]);
                 return;
             }
 
-            int readResult = [self readPacketAtOrAfterTime:target timeline:LibAVCursorStepTimelinePresentation];
-            if (readResult < 0)
+            BOOL hasBest = NO;
+            CMTime bestPTS = kCMTimeInvalid;
+            int scan = 0;
+            int scansAfterFirstCandidate = 0;
+            const int maxScan = 4096;
+            int lookahead = 6;
+            if (self.trackReader != nil && self.trackReader->stream != NULL && self.trackReader->stream->codecpar != NULL)
             {
-                if (readResult == AVERROR_EOF)
+                lookahead = MAX(6, self.trackReader->stream->codecpar->video_delay + 2);
+            }
+
+            while (scan < maxScan)
+            {
+                int readResult = [self readNextPacketForTrack];
+                if (readResult < 0)
                 {
-                    completionHandler(actualStepCount, nil);
+                    if (readResult == AVERROR_EOF)
+                    {
+                        NSLog(@"[LibAVSampleCursor %p %@] stepByCount timeline=pts reached EOF scan=%d startPTS=%@ hasBest=%d bestPTS=%@",
+                              self,
+                              [self debugTracePrefix],
+                              scan,
+                              LibAVTimeString(startPTS),
+                              hasBest ? 1 : 0,
+                              LibAVTimeString(bestPTS));
+                        break;
+                    }
+
+                    BOOL nearDurationEnd = NO;
+                    if (CMTIME_IS_NUMERIC(startPTS) &&
+                        CMTIME_IS_VALID(self.trackReader.formatReader.duration))
+                    {
+                        CMTime tailMargin = [self fallbackSampleDuration];
+                        if (!CMTIME_IS_NUMERIC(tailMargin) || CMTIME_COMPARE_INLINE(tailMargin, <=, kCMTimeZero))
+                        {
+                            tailMargin = CMTimeMake(1, 30);
+                        }
+                        tailMargin = CMTimeMultiplyByFloat64(tailMargin, 2.0);
+                        CMTime cutoff = CMTimeSubtract(self.trackReader.formatReader.duration, tailMargin);
+                        if (CMTIME_COMPARE_INLINE(cutoff, <, kCMTimeZero))
+                        {
+                            cutoff = kCMTimeZero;
+                        }
+                        nearDurationEnd = CMTIME_COMPARE_INLINE(startPTS, >=, cutoff);
+                    }
+
+                    if (nearDurationEnd)
+                    {
+                        // Some demuxers surface non-EOF negative codes at stream tail.
+                        // At/near duration end and with no forward candidate, treat this
+                        // as normal end-of-stream rather than a fatal playback error.
+                        NSLog(@"[LibAVSampleCursor %p %@] stepByCount timeline=pts treating tail scan error as EOF error=%d scan=%d startPTS=%@ duration=%@",
+                              self,
+                              [self debugTracePrefix],
+                              readResult,
+                              scan,
+                              LibAVTimeString(startPTS),
+                              LibAVTimeString(self.trackReader.formatReader.duration));
+                        break;
+                    }
+
+                    if (hasBest)
+                    {
+                        // We already found a valid forward PTS candidate. Some demuxers can
+                        // report non-EOF read failures near stream tail; treat those as
+                        // scan termination and keep the best candidate instead of surfacing
+                        // a fatal step error to the host.
+                        NSLog(@"[LibAVSampleCursor %p %@] stepByCount timeline=pts scan nonfatal error=%d scan=%d startPTS=%@ hasBest=1 bestPTS=%@",
+                              self,
+                              [self debugTracePrefix],
+                              readResult,
+                              scan,
+                              LibAVTimeString(startPTS),
+                              LibAVTimeString(bestPTS));
+                        break;
+                    }
+                    NSLog(@"[LibAVSampleCursor %p %@] stepByCount timeline=pts scan error=%d scan=%d startPTS=%@",
+                          self,
+                          [self debugTracePrefix],
+                          readResult,
+                          scan,
+                          LibAVTimeString(startPTS));
+                    av_packet_free(&bestPacket);
+                    completionHandler(actualStepCount, [self libAVFormatErrorFrom:readResult]);
                     return;
                 }
-                completionHandler(actualStepCount, [self libAVFormatErrorFrom:readResult]);
-                return;
-            }
 
-            // Ensure actual forward PTS progression after seek anchoring.
-            if (CMTIME_IS_NUMERIC(startPTS) && CMTIME_IS_NUMERIC(self.presentationTimeStamp) &&
-                CMTIME_COMPARE_INLINE(self.presentationTimeStamp, <=, startPTS))
-            {
-                int scan = 0;
-                const int maxScan = 2048;
-                while (scan < maxScan && CMTIME_IS_NUMERIC(self.presentationTimeStamp) &&
-                       CMTIME_COMPARE_INLINE(self.presentationTimeStamp, <=, startPTS))
+                [self updateStateForPacket:_packet];
+                scan += 1;
+
+                CMTime candidatePTS = self.presentationTimeStamp;
+                if (!CMTIME_IS_NUMERIC(startPTS) ||
+                    !CMTIME_IS_NUMERIC(candidatePTS) ||
+                    CMTIME_COMPARE_INLINE(candidatePTS, >, startPTS))
                 {
-                    int next = [self readNextPacketForTrack];
-                    if (next < 0)
+                    if (!hasBest ||
+                        !CMTIME_IS_NUMERIC(bestPTS) ||
+                        !CMTIME_IS_NUMERIC(candidatePTS) ||
+                        CMTIME_COMPARE_INLINE(candidatePTS, <, bestPTS))
                     {
-                        if (next == AVERROR_EOF)
+                        av_packet_unref(bestPacket);
+                        if (av_packet_ref(bestPacket, _packet) == 0)
                         {
-                            break;
+                            hasBest = YES;
+                            bestPTS = candidatePTS;
+                            scansAfterFirstCandidate = 0;
+                            NSLog(@"[LibAVSampleCursor %p %@] stepByCount timeline=pts candidate update bestPTS=%@ scan=%d pos=%lld",
+                                  self,
+                                  [self debugTracePrefix],
+                                  LibAVTimeString(bestPTS),
+                                  scan,
+                                  _packet->pos);
                         }
-                        completionHandler(actualStepCount, [self libAVFormatErrorFrom:next]);
-                        return;
                     }
-                    [self updateStateForPacket:_packet];
-                    scan += 1;
+                    else if (hasBest)
+                    {
+                        scansAfterFirstCandidate += 1;
+                    }
+                }
+
+                if (hasBest && scansAfterFirstCandidate >= lookahead)
+                {
+                    break;
                 }
             }
 
-            // If we could not advance presentation time, do not report forward progress.
-            // This can happen near EOS when seek(target) resolves to the last sample repeatedly.
-            if (CMTIME_IS_NUMERIC(startPTS) &&
-                CMTIME_IS_NUMERIC(self.presentationTimeStamp) &&
-                CMTIME_COMPARE_INLINE(self.presentationTimeStamp, <=, startPTS))
+            if (!hasBest)
             {
+                av_packet_free(&bestPacket);
                 NSLog(@"[LibAVSampleCursor %p %@] stepByCount no-forward-progress timeline=pts startPTS=%@ endPTS=%@",
                       self,
                       [self debugTracePrefix],
@@ -1345,6 +1454,26 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
                 completionHandler(actualStepCount, nil);
                 return;
             }
+
+            av_packet_unref(_packet);
+            if (av_packet_ref(_packet, bestPacket) != 0)
+            {
+                av_packet_free(&bestPacket);
+                completionHandler(actualStepCount, [NSError errorWithDomain:MediaExtensionErrorDomain
+                                                                        code:MEErrorInternalFailure
+                                                                    userInfo:nil]);
+                return;
+            }
+            av_packet_free(&bestPacket);
+
+            self.decodeTimeStamp = kCMTimeInvalid;
+            self.pendingDecodeAnchorTime = kCMTimeInvalid;
+            [self updateStateForPacket:_packet];
+            NSLog(@"[LibAVSampleCursor %p %@] stepByCount timeline=pts selected nextPTS=%@ nextDTS=%@",
+                  self,
+                  [self debugTracePrefix],
+                  LibAVTimeString(self.presentationTimeStamp),
+                  LibAVTimeString(self.decodeTimeStamp));
 
             actualStepCount += 1;
         }
@@ -1460,20 +1589,76 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
     const uint8_t *packetBytes = packet->data;
     size_t packetSize = (size_t)packet->size;
     NSData *convertedData = nil;
-    BOOL didConvertToAVCC = NO;
+    BOOL emittedAVCC = NO;
 
     if (self.trackReader != nil &&
         self.trackReader->stream != NULL &&
         self.trackReader->stream->codecpar != NULL &&
-        self.trackReader->stream->codecpar->codec_id == AV_CODEC_ID_H264 &&
-        LibAVBufferHasAnnexBStartCode(packetBytes, packetSize))
+        self.trackReader->stream->codecpar->codec_id == AV_CODEC_ID_H264)
     {
-        convertedData = [self h264ConvertAnnexBToAVCCData:packetBytes size:packetSize];
+        int lengthFieldSize = [self h264NALLengthFieldSize];
+        BOOL validConfiguredAVCC = [self h264LooksLikeAVCCData:packetBytes
+                                                          size:packetSize
+                                               lengthFieldSize:lengthFieldSize];
+        BOOL hasAnnexB = LibAVBufferHasAnnexBStartCode(packetBytes, packetSize);
+        int detectedLengthFieldSize = [self h264DetectAVCCLengthFieldSize:packetBytes size:packetSize];
+
+        // Important: check configured AVCC first. A 4-byte AVCC length prefix can begin with
+        // 00 00 01 xx, which is byte-identical to an Annex-B start code at packet start.
+        // Misclassifying those packets as Annex-B corrupts NAL headers (e.g. types 26/16/0).
+        if (validConfiguredAVCC)
+        {
+            emittedAVCC = YES;
+        }
+        else if (hasAnnexB)
+        {
+            convertedData = [self h264ConvertAnnexBToAVCCData:packetBytes size:packetSize];
+        }
+        else if (detectedLengthFieldSize > 0)
+        {
+            if (detectedLengthFieldSize == lengthFieldSize)
+            {
+                emittedAVCC = YES;
+            }
+            else
+            {
+                convertedData = [self h264RepackAVCCData:packetBytes
+                                                    size:packetSize
+                                  sourceLengthFieldSize:detectedLengthFieldSize
+                               destinationLengthFieldSize:lengthFieldSize];
+                if (convertedData != nil)
+                {
+                    NSLog(@"[LibAVSampleCursor %p %@] normalized AVCC length field size %d -> %d packetSize=%zu",
+                          self,
+                          [self debugTracePrefix],
+                          detectedLengthFieldSize,
+                          lengthFieldSize,
+                          packetSize);
+                }
+            }
+        }
+        else
+        {
+            // Last resort: preserve payload while enforcing a single AVCC contract.
+            convertedData = [self h264WrapSingleNALAsAVCCData:packetBytes size:packetSize lengthFieldSize:lengthFieldSize];
+            if (convertedData != nil)
+            {
+                NSLog(@"[LibAVSampleCursor %p %@] normalized non-annexb/non-avcc h264 packet to single-nal AVCC size=%zu",
+                      self,
+                      [self debugTracePrefix],
+                      packetSize);
+            }
+        }
+
         if (convertedData != nil && convertedData.length > 0)
         {
             packetBytes = convertedData.bytes;
             packetSize = convertedData.length;
-            didConvertToAVCC = YES;
+            emittedAVCC = YES;
+        }
+        else if (detectedLengthFieldSize > 0)
+        {
+            emittedAVCC = YES;
         }
     }
 
@@ -1528,14 +1713,41 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
         return NULL;
     }
 
-    if (didConvertToAVCC)
+    CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, true);
+    if (attachments != NULL && CFArrayGetCount(attachments) > 0)
     {
-        NSLog(@"[LibAVSampleCursor %p %@] converted H264 AnnexB->AVCC packetSize=%d convertedSize=%zu",
+        CFMutableDictionaryRef sampleAttachment =
+            (CFMutableDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
+        BOOL isKeyframe = ((packet->flags & AV_PKT_FLAG_KEY) != 0);
+
+        if (isKeyframe)
+        {
+            CFDictionaryRemoveValue(sampleAttachment, kCMSampleAttachmentKey_NotSync);
+        }
+        else
+        {
+            CFDictionarySetValue(sampleAttachment, kCMSampleAttachmentKey_NotSync, kCFBooleanTrue);
+        }
+
+        CFDictionarySetValue(sampleAttachment,
+                             kCMSampleAttachmentKey_DependsOnOthers,
+                             (!isKeyframe ? kCFBooleanTrue : kCFBooleanFalse));
+    }
+
+    if (emittedAVCC)
+    {
+        NSLog(@"[LibAVSampleCursor %p %@] emitted H264 AVCC packetSize=%d outputSize=%zu",
               self,
               [self debugTracePrefix],
               packet->size,
               packetSize);
     }
+
+    [self logSampleAuditForPacket:packet
+                     sampleBuffer:sampleBuffer
+                      sampleBytes:packetBytes
+                       packetSize:packetSize
+                           isAVCC:emittedAVCC];
 
     return sampleBuffer;
 }
@@ -1551,10 +1763,15 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
     if (codecpar->extradata != NULL && codecpar->extradata_size >= 5 && codecpar->extradata[0] == 1)
     {
         int lengthSize = (codecpar->extradata[4] & 0x03) + 1;
-        if (lengthSize >= 1 && lengthSize <= 4)
+        // AVCDecoderConfigurationRecord allows only 1, 2, or 4-byte NAL length fields.
+        if (lengthSize == 1 || lengthSize == 2 || lengthSize == 4)
         {
             return lengthSize;
         }
+        NSLog(@"[LibAVSampleCursor %p %@] invalid avcC length field size=%d; defaulting to 4",
+              self,
+              [self debugTracePrefix],
+              lengthSize);
     }
 
     return 4;
@@ -1654,6 +1871,352 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
     }
 
     return (output.length > 0) ? output : nil;
+}
+
+- (BOOL)h264LooksLikeAVCCData:(const uint8_t *)bytes
+                         size:(size_t)size
+              lengthFieldSize:(int)lengthFieldSize
+{
+    if (bytes == NULL || size == 0 || !(lengthFieldSize == 1 || lengthFieldSize == 2 || lengthFieldSize == 4))
+    {
+        return NO;
+    }
+
+    size_t cursor = 0;
+    int nalCount = 0;
+    while (cursor + (size_t)lengthFieldSize <= size)
+    {
+        uint32_t nalLen = 0;
+        for (int i = 0; i < lengthFieldSize; i++)
+        {
+            nalLen = (nalLen << 8) | bytes[cursor + (size_t)i];
+        }
+        cursor += (size_t)lengthFieldSize;
+        if (nalLen == 0 || cursor + nalLen > size)
+        {
+            return NO;
+        }
+        nalCount += 1;
+        cursor += nalLen;
+    }
+
+    return (nalCount > 0 && cursor == size);
+}
+
+- (int)h264DetectAVCCLengthFieldSize:(const uint8_t *)bytes
+                                size:(size_t)size
+{
+    int bestCandidate = 0;
+    int bestScore = INT_MIN;
+
+    for (int candidate = 1; candidate <= 4; candidate++)
+    {
+        if (![self h264LooksLikeAVCCData:bytes size:size lengthFieldSize:candidate])
+        {
+            continue;
+        }
+
+        size_t cursor = 0;
+        int nalCount = 0;
+        int validNalCount = 0;
+        int commonNalCount = 0;
+        int invalidNalCount = 0;
+
+        while (cursor + (size_t)candidate <= size)
+        {
+            uint32_t nalLen = 0;
+            for (int i = 0; i < candidate; i++)
+            {
+                nalLen = (nalLen << 8) | bytes[cursor + (size_t)i];
+            }
+            cursor += (size_t)candidate;
+            if (nalLen == 0 || cursor + nalLen > size)
+            {
+                invalidNalCount += 1;
+                break;
+            }
+
+            uint8_t nalType = bytes[cursor] & 0x1F;
+            nalCount += 1;
+            if (nalType >= 1 && nalType <= 23)
+            {
+                validNalCount += 1;
+                if (nalType == 1 || nalType == 5 || nalType == 6 || nalType == 7 || nalType == 8 || nalType == 9)
+                {
+                    commonNalCount += 1;
+                }
+            }
+            else
+            {
+                invalidNalCount += 1;
+            }
+
+            cursor += nalLen;
+        }
+
+        if (cursor != size || nalCount == 0)
+        {
+            continue;
+        }
+
+        // Prefer candidates that decode to plausible H.264 NAL unit types.
+        int score = (commonNalCount * 8) + (validNalCount * 3) - (invalidNalCount * 20) + nalCount;
+        if (score > bestScore)
+        {
+            bestScore = score;
+            bestCandidate = candidate;
+        }
+    }
+
+    if (bestCandidate > 0 && bestScore > -10)
+    {
+        return bestCandidate;
+    }
+
+    return 0;
+}
+
+- (NSData * _Nullable)h264RepackAVCCData:(const uint8_t *)bytes
+                                     size:(size_t)size
+                       sourceLengthFieldSize:(int)sourceLengthFieldSize
+                    destinationLengthFieldSize:(int)destinationLengthFieldSize
+{
+    if (bytes == NULL || size == 0 ||
+        !(sourceLengthFieldSize == 1 || sourceLengthFieldSize == 2 || sourceLengthFieldSize == 4) ||
+        !(destinationLengthFieldSize == 1 || destinationLengthFieldSize == 2 || destinationLengthFieldSize == 4))
+    {
+        return nil;
+    }
+
+    NSMutableData *output = [NSMutableData dataWithCapacity:size + 64];
+    size_t cursor = 0;
+
+    while (cursor + (size_t)sourceLengthFieldSize <= size)
+    {
+        uint32_t nalLen = 0;
+        for (int i = 0; i < sourceLengthFieldSize; i++)
+        {
+            nalLen = (nalLen << 8) | bytes[cursor + (size_t)i];
+        }
+        cursor += (size_t)sourceLengthFieldSize;
+
+        if (nalLen == 0 || cursor + nalLen > size)
+        {
+            return nil;
+        }
+
+        if ((destinationLengthFieldSize == 1 && nalLen > UINT8_MAX) ||
+            (destinationLengthFieldSize == 2 && nalLen > UINT16_MAX))
+        {
+            return nil;
+        }
+
+        uint8_t prefix[4] = {0, 0, 0, 0};
+        switch (destinationLengthFieldSize)
+        {
+            case 1:
+                prefix[0] = (uint8_t)nalLen;
+                break;
+            case 2:
+                prefix[0] = (uint8_t)((nalLen >> 8) & 0xFF);
+                prefix[1] = (uint8_t)(nalLen & 0xFF);
+                break;
+            default:
+                prefix[0] = (uint8_t)((nalLen >> 24) & 0xFF);
+                prefix[1] = (uint8_t)((nalLen >> 16) & 0xFF);
+                prefix[2] = (uint8_t)((nalLen >> 8) & 0xFF);
+                prefix[3] = (uint8_t)(nalLen & 0xFF);
+                break;
+        }
+
+        [output appendBytes:prefix length:(NSUInteger)destinationLengthFieldSize];
+        [output appendBytes:(bytes + cursor) length:nalLen];
+        cursor += nalLen;
+    }
+
+    if (cursor != size || output.length == 0)
+    {
+        return nil;
+    }
+
+    return output;
+}
+
+- (NSData * _Nullable)h264WrapSingleNALAsAVCCData:(const uint8_t *)bytes
+                                             size:(size_t)size
+                                  lengthFieldSize:(int)lengthFieldSize
+{
+    if (bytes == NULL || size == 0 || !(lengthFieldSize == 1 || lengthFieldSize == 2 || lengthFieldSize == 4))
+    {
+        return nil;
+    }
+
+    if ((lengthFieldSize == 1 && size > UINT8_MAX) ||
+        (lengthFieldSize == 2 && size > UINT16_MAX) ||
+        (lengthFieldSize == 4 && size > UINT32_MAX))
+    {
+        return nil;
+    }
+
+    NSMutableData *output = [NSMutableData dataWithCapacity:size + (NSUInteger)lengthFieldSize];
+    uint8_t lengthPrefix[4] = {0, 0, 0, 0};
+    switch (lengthFieldSize)
+    {
+        case 1:
+            lengthPrefix[0] = (uint8_t)size;
+            break;
+        case 2:
+            lengthPrefix[0] = (uint8_t)((size >> 8) & 0xFF);
+            lengthPrefix[1] = (uint8_t)(size & 0xFF);
+            break;
+        default:
+            lengthPrefix[0] = (uint8_t)((size >> 24) & 0xFF);
+            lengthPrefix[1] = (uint8_t)((size >> 16) & 0xFF);
+            lengthPrefix[2] = (uint8_t)((size >> 8) & 0xFF);
+            lengthPrefix[3] = (uint8_t)(size & 0xFF);
+            break;
+    }
+
+    [output appendBytes:lengthPrefix length:(NSUInteger)lengthFieldSize];
+    [output appendBytes:bytes length:size];
+    return output;
+}
+
+- (NSString *)h264AuditSummaryForBytes:(const uint8_t *)bytes
+                                  size:(size_t)size
+                              isAVCC:(BOOL)isAVCC
+{
+    if (bytes == NULL || size == 0)
+    {
+        return @"nal=none";
+    }
+
+    int counts[32] = {0};
+    int nalCount = 0;
+    BOOL sawIDR = NO;
+
+    if (isAVCC)
+    {
+        int lengthFieldSize = [self h264NALLengthFieldSize];
+        size_t cursor = 0;
+        while (cursor + (size_t)lengthFieldSize <= size)
+        {
+            uint32_t nalLen = 0;
+            for (int i = 0; i < lengthFieldSize; i++)
+            {
+                nalLen = (nalLen << 8) | bytes[cursor + (size_t)i];
+            }
+            cursor += (size_t)lengthFieldSize;
+            if (nalLen == 0 || cursor + nalLen > size)
+            {
+                break;
+            }
+
+            uint8_t nalType = bytes[cursor] & 0x1F;
+            if (nalType < 32) counts[nalType] += 1;
+            sawIDR = sawIDR || (nalType == 5);
+            nalCount += 1;
+            cursor += nalLen;
+        }
+    }
+    else
+    {
+        size_t i = 0;
+        while (i + 3 < size)
+        {
+            size_t start = SIZE_MAX;
+            size_t startCodeSize = 0;
+            for (; i + 3 < size; i++)
+            {
+                if (bytes[i] == 0x00 && bytes[i + 1] == 0x00 &&
+                    (bytes[i + 2] == 0x01 || ((i + 3 < size) && bytes[i + 2] == 0x00 && bytes[i + 3] == 0x01)))
+                {
+                    start = i;
+                    startCodeSize = (bytes[i + 2] == 0x01) ? 3 : 4;
+                    break;
+                }
+            }
+            if (start == SIZE_MAX)
+            {
+                break;
+            }
+            size_t nalStart = start + startCodeSize;
+            if (nalStart >= size) break;
+            uint8_t nalType = bytes[nalStart] & 0x1F;
+            if (nalType < 32) counts[nalType] += 1;
+            sawIDR = sawIDR || (nalType == 5);
+            nalCount += 1;
+            i = nalStart + 1;
+        }
+    }
+
+    NSMutableArray<NSString *> *types = [NSMutableArray array];
+    for (int t = 0; t < 32; t++)
+    {
+        if (counts[t] > 0)
+        {
+            [types addObject:[NSString stringWithFormat:@"%d:%d", t, counts[t]]];
+        }
+    }
+    NSString *joined = (types.count > 0) ? [types componentsJoinedByString:@","] : @"none";
+    return [NSString stringWithFormat:@"nalCount=%d idr=%d types=[%@]", nalCount, sawIDR ? 1 : 0, joined];
+}
+
+- (void)logSampleAuditForPacket:(const AVPacket *)packet
+                   sampleBuffer:(CMSampleBufferRef)sampleBuffer
+                    sampleBytes:(const uint8_t *)sampleBytes
+                     packetSize:(size_t)packetSize
+                         isAVCC:(BOOL)isAVCC
+{
+    self.deliveredSampleAuditCount += 1;
+    BOOL shouldLog = (self.deliveredSampleAuditCount <= 160 || (self.deliveredSampleAuditCount % 120) == 0);
+    if (!shouldLog)
+    {
+        return;
+    }
+
+    BOOL notSync = NO;
+    BOOL dependsOnOthers = NO;
+    CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, false);
+    if (attachments != NULL && CFArrayGetCount(attachments) > 0)
+    {
+        CFDictionaryRef dict = CFArrayGetValueAtIndex(attachments, 0);
+        CFTypeRef notSyncValue = CFDictionaryGetValue(dict, kCMSampleAttachmentKey_NotSync);
+        CFTypeRef dependsValue = CFDictionaryGetValue(dict, kCMSampleAttachmentKey_DependsOnOthers);
+        notSync = (notSyncValue == kCFBooleanTrue);
+        dependsOnOthers = (dependsValue == kCFBooleanTrue);
+    }
+
+    NSString *h264Summary = @"codec=non-h264";
+    if (self.trackReader != nil &&
+        self.trackReader->stream != NULL &&
+        self.trackReader->stream->codecpar != NULL &&
+        self.trackReader->stream->codecpar->codec_id == AV_CODEC_ID_H264 &&
+        sampleBytes != NULL && packetSize > 0)
+    {
+        h264Summary = [self h264AuditSummaryForBytes:sampleBytes size:packetSize isAVCC:isAVCC];
+    }
+
+    int64_t globalIdx = 0;
+    @synchronized([LibAVSampleCursor class]) {
+        gLibAVCursorGlobalSampleEmitCounter += 1;
+        globalIdx = gLibAVCursorGlobalSampleEmitCounter;
+    }
+
+    NSLog(@"[LibAVSampleCursor %p %@] sampleAudit idx=%lld global=%lld pts=%@ dts=%@ dur=%@ key=%d notSync=%d depends=%d size=%zu %s %@",
+          self,
+          [self debugTracePrefix],
+          self.deliveredSampleAuditCount,
+          globalIdx,
+          LibAVTimeString(self.presentationTimeStamp),
+          LibAVTimeString(self.decodeTimeStamp),
+          LibAVTimeString(self.currentSampleDuration),
+          (packet != NULL && ((packet->flags & AV_PKT_FLAG_KEY) != 0)) ? 1 : 0,
+          notSync ? 1 : 0,
+          dependsOnOthers ? 1 : 0,
+          packetSize,
+          isAVCC ? "avcc" : "native",
+          h264Summary);
 }
 
 #pragma mark - Dependency extraction

@@ -28,7 +28,7 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "628"
             endingLineNumber = "628"
-            landmarkName = "-seekToTime:forTimeline:"
+            landmarkName = "-openDemuxContext"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>
@@ -60,7 +60,7 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "153"
             endingLineNumber = "153"
-            landmarkName = "libavCursorSeek(opaque, offset, whence)"
+            landmarkName = "libavCursorReadPacket(opaque, buf, bufSize)"
             landmarkType = "9">
          </BreakpointContent>
       </BreakpointProxy>
@@ -76,7 +76,7 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "247"
             endingLineNumber = "247"
-            landmarkName = "-dealloc"
+            landmarkName = "-initWithTrackReader:pts:"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>
