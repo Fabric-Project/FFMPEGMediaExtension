@@ -8,8 +8,10 @@ You can think of this project as an attempt to make a one size fits all Media Ex
 
 Since Media Extensions are shipped in a host app, this has also provides a Host app.
 
-We have basic frame decoding working! 
-<img width="1012" alt="image" src="https://github.com/user-attachments/assets/90c76ba3-4fa9-40df-869a-a9c265afb21d">
+We have h264 GOP decode from an MKV container working! 
+
+<video src="https://github.com/user-attachments/assets/4cdaf21f-120c-4793-8453-4dd9b4810916">
+
 
 But there is a ton left to do!
 - [ ] Asset / Track Metadata
