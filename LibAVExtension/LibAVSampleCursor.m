@@ -8,6 +8,8 @@
 #import "LibAVSampleCursor.h"
 #import "LibAVTrackReader.h"
 #import "LibAVFormatReader.h"
+#import "LibAVCodecPacketFormatting.h"
+#import "LibAVH264CodecPacketFormatter.h"
 
 #import <libavformat/avformat.h>
 #import <libavcodec/avcodec.h>
@@ -42,40 +44,6 @@ static NSString *LibAVTimeString(CMTime time)
     return [NSString stringWithFormat:@"{%lld/%d = %.6f}", time.value, time.timescale, CMTimeGetSeconds(time)];
 }
 
-static BOOL LibAVBufferHasAnnexBStartCode(const uint8_t *data, size_t size)
-{
-    if (data == NULL || size < 3)
-    {
-        return NO;
-    }
-
-    // Annex-B detection must anchor at packet start (allowing only leading zero bytes).
-    // Searching anywhere in payload causes AVCC packets to be misclassified when RBSP data
-    // happens to contain 00 00 01 by chance.
-    size_t i = 0;
-    while (i < size && data[i] == 0x00)
-    {
-        i += 1;
-    }
-
-    // If first non-zero byte is 0x01 and we had at least two leading zeros, it's Annex-B.
-    if (i >= 2 && i < size && data[i] == 0x01)
-    {
-        return YES;
-    }
-
-    // Also accept exact prefix without extra leading zeros.
-    if (size >= 4 && data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x00 && data[3] == 0x01)
-    {
-        return YES;
-    }
-    if (size >= 3 && data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x01)
-    {
-        return YES;
-    }
-    return NO;
-}
-
 @interface LibAVSampleCursor ()
 @property (readwrite, strong) LibAVTrackReader* trackReader;
 
@@ -101,28 +69,12 @@ static BOOL LibAVBufferHasAnnexBStartCode(const uint8_t *data, size_t size)
 @property (nonatomic, readwrite, assign) LibAVCursorStepTimeline debugTimeline;
 @property (nonatomic, readwrite) CMTime lastDeliveredDecodeTimeStamp;
 @property (nonatomic, readwrite, assign) int64_t deliveredSampleAuditCount;
+@property (nonatomic, strong, nullable) id<LibAVCodecPacketFormatting> packetFormatter;
 
 - (BOOL)trackLikelyHasReorderedPresentation;
 - (void)alignToSourceSampleLocation:(LibAVSampleCursor *)source;
 - (void)beginDebugOp:(NSString *)name timeline:(LibAVCursorStepTimeline)timeline;
 - (NSString *)debugTracePrefix;
-- (int)h264NALLengthFieldSize;
-- (NSData * _Nullable)h264ConvertAnnexBToAVCCData:(const uint8_t *)bytes size:(size_t)size;
-- (BOOL)h264LooksLikeAVCCData:(const uint8_t *)bytes
-                         size:(size_t)size
-              lengthFieldSize:(int)lengthFieldSize;
-- (int)h264DetectAVCCLengthFieldSize:(const uint8_t *)bytes
-                                size:(size_t)size;
-- (NSData * _Nullable)h264RepackAVCCData:(const uint8_t *)bytes
-                                     size:(size_t)size
-                       sourceLengthFieldSize:(int)sourceLengthFieldSize
-                    destinationLengthFieldSize:(int)destinationLengthFieldSize;
-- (NSData * _Nullable)h264WrapSingleNALAsAVCCData:(const uint8_t *)bytes
-                                             size:(size_t)size
-                                  lengthFieldSize:(int)lengthFieldSize;
-- (NSString *)h264AuditSummaryForBytes:(const uint8_t *)bytes
-                                  size:(size_t)size
-                              isAVCC:(BOOL)isAVCC;
 - (void)logSampleAuditForPacket:(const AVPacket *)packet
                    sampleBuffer:(CMSampleBufferRef)sampleBuffer
                     sampleBytes:(const uint8_t *)sampleBytes
@@ -242,6 +194,15 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
         self.debugTimeline = LibAVCursorStepTimelinePresentation;
         self.lastDeliveredDecodeTimeStamp = kCMTimeInvalid;
         self.deliveredSampleAuditCount = 0;
+        self.packetFormatter = nil;
+
+        if (self.trackReader != nil &&
+            self.trackReader->stream != NULL &&
+            self.trackReader->stream->codecpar != NULL &&
+            self.trackReader->stream->codecpar->codec_id == AV_CODEC_ID_H264)
+        {
+            self.packetFormatter = [[LibAVH264CodecPacketFormatter alloc] initWithCodecParameters:self.trackReader->stream->codecpar];
+        }
 
         [self beginDebugOp:@"initWithPTS" timeline:LibAVCursorStepTimelinePresentation];
         NSLog(@"[LibAVSampleCursor %p %@] init requestedPTS=%@", self, [self debugTracePrefix], LibAVTimeString(pts));
@@ -486,26 +447,73 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
 
 - (MESampleCursorChunk * _Nullable)chunkDetailsReturningError:(NSError *__autoreleasing  _Nullable * _Nullable)error
 {
-    // Force AVFoundation to request CMSampleBuffer objects through
-    // loadSampleBufferContainingSamplesToEndCursor:, where we can provide
-    // normalized packet payloads and timing consistently.
-    if (error != NULL)
+    if (![self currentPacketHasValidData] || self.sampleOffset < 0 || self.sampleSize == 0)
     {
-        *error = [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorLocationNotAvailable userInfo:nil];
+        if (error != NULL)
+        {
+            *error = [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorLocationNotAvailable userInfo:nil];
+        }
+        return nil;
     }
-    return nil;
+
+    BOOL requiresSampleBufferPath = (self.packetFormatter != nil && [self.packetFormatter requiresSampleBufferPath]);
+    // Keep reordered/dependent/formatter-required samples on the sample-buffer path.
+    if (requiresSampleBufferPath || [self trackLikelyHasReorderedPresentation] || self.dependencyInfo.sampleDependsOnOthers)
+    {
+        if (error != NULL)
+        {
+            *error = [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorLocationNotAvailable userInfo:nil];
+        }
+        return nil;
+    }
+
+    AVSampleCursorStorageRange range;
+    range.offset = self.sampleOffset;
+    range.length = self.sampleSize;
+
+    AVSampleCursorChunkInfo info;
+    info.chunkSampleCount = 1;
+    info.chunkHasUniformSampleSizes = true;
+    info.chunkHasUniformSampleDurations = true;
+    info.chunkHasUniformFormatDescriptions = true;
+
+    MESampleCursorChunk *chunk =
+        [[MESampleCursorChunk alloc] initWithByteSource:self.trackReader.formatReader.byteSource
+                                      chunkStorageRange:range
+                                              chunkInfo:info
+                                 sampleIndexWithinChunk:0];
+    return chunk;
 }
 
 - (MESampleLocation * _Nullable)sampleLocationReturningError:(NSError *__autoreleasing  _Nullable * _Nullable)error
 {
-    // Force AVFoundation to request CMSampleBuffer objects through
-    // loadSampleBufferContainingSamplesToEndCursor:, where we can provide
-    // normalized packet payloads and timing consistently.
-    if (error != NULL)
+    if (![self currentPacketHasValidData] || self.sampleOffset < 0 || self.sampleSize == 0)
     {
-        *error = [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorLocationNotAvailable userInfo:nil];
+        if (error != NULL)
+        {
+            *error = [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorLocationNotAvailable userInfo:nil];
+        }
+        return nil;
     }
-    return nil;
+
+    BOOL requiresSampleBufferPath = (self.packetFormatter != nil && [self.packetFormatter requiresSampleBufferPath]);
+    // Keep reordered/dependent/formatter-required samples on the sample-buffer path.
+    if (requiresSampleBufferPath || [self trackLikelyHasReorderedPresentation] || self.dependencyInfo.sampleDependsOnOthers)
+    {
+        if (error != NULL)
+        {
+            *error = [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorLocationNotAvailable userInfo:nil];
+        }
+        return nil;
+    }
+
+    AVSampleCursorStorageRange range;
+    range.offset = self.sampleOffset;
+    range.length = self.sampleSize;
+    MESampleLocation *location =
+        [[MESampleLocation alloc] initWithByteSource:self.trackReader.formatReader.byteSource
+                                      sampleLocation:range];
+    return location;
 }
 
 - (void)loadSampleBufferContainingSamplesToEndCursor:(id<MESampleCursor> _Nullable)endSampleCursor
@@ -541,6 +549,164 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
             NSError *error = [NSError errorWithDomain:MediaExtensionErrorDomain code:MEErrorNoSamples userInfo:nil];
             completionHandler(nil, error);
             return;
+        }
+
+        // For non-reordered tracks, opportunistically batch a short decode-order run.
+        if (![self trackLikelyHasReorderedPresentation] &&
+            CMTIME_IS_NUMERIC(endDTS) &&
+            CMTIME_IS_NUMERIC(startDTS) &&
+            CMTIME_COMPARE_INLINE(endDTS, >, startDTS))
+        {
+            const int kMaxBatchSamples = 8;
+            LibAVSampleCursor *batchCursor = [self copy];
+            NSMutableData *batchedPayload = [NSMutableData dataWithCapacity:4096];
+            NSMutableArray<NSValue *> *timingValues = [NSMutableArray arrayWithCapacity:kMaxBatchSamples];
+            NSMutableArray<NSNumber *> *sampleSizes = [NSMutableArray arrayWithCapacity:kMaxBatchSamples];
+            NSMutableArray<NSNumber *> *sampleIsKeyframe = [NSMutableArray arrayWithCapacity:kMaxBatchSamples];
+
+            int collected = 0;
+            while (batchCursor != nil && collected < kMaxBatchSamples && [batchCursor currentPacketHasValidData])
+            {
+                CMSampleBufferRef one = [batchCursor createSampleBufferFromPacket:batchCursor->_packet];
+                if (one == NULL)
+                {
+                    break;
+                }
+
+                CMBlockBufferRef oneData = CMSampleBufferGetDataBuffer(one);
+                size_t oneSize = (size_t)CMBlockBufferGetDataLength(oneData);
+                NSMutableData *oneBytes = [NSMutableData dataWithLength:oneSize];
+                OSStatus copyStatus = CMBlockBufferCopyDataBytes(oneData, 0, oneSize, oneBytes.mutableBytes);
+                if (copyStatus != noErr)
+                {
+                    CFRelease(one);
+                    break;
+                }
+
+                CMSampleTimingInfo oneTiming;
+                OSStatus timingStatus = CMSampleBufferGetSampleTimingInfo(one, 0, &oneTiming);
+                if (timingStatus != noErr)
+                {
+                    CFRelease(one);
+                    break;
+                }
+
+                [batchedPayload appendData:oneBytes];
+                [timingValues addObject:[NSValue valueWithBytes:&oneTiming objCType:@encode(CMSampleTimingInfo)]];
+                [sampleSizes addObject:@(oneSize)];
+                [sampleIsKeyframe addObject:@(((batchCursor->_packet->flags & AV_PKT_FLAG_KEY) != 0) ? YES : NO)];
+                collected += 1;
+
+                CMTime batchDTS = batchCursor.decodeTimeStamp;
+                CFRelease(one);
+
+                if (CMTIME_COMPARE_INLINE(batchDTS, >=, endDTS))
+                {
+                    break;
+                }
+
+                __block int64_t actualStep = 0;
+                __block NSError *stepError = nil;
+                [batchCursor stepInDecodeOrderByCount:1 completionHandler:^(int64_t actual, NSError * _Nullable error) {
+                    actualStep = actual;
+                    stepError = error;
+                }];
+                if (stepError != nil || actualStep != 1)
+                {
+                    break;
+                }
+            }
+
+            if (collected > 1 && batchedPayload.length > 0)
+            {
+                CMBlockBufferRef batchedBlockBuffer = NULL;
+                CMSampleBufferRef batchedSampleBuffer = NULL;
+                OSStatus blockStatus = CMBlockBufferCreateWithMemoryBlock(kCFAllocatorDefault,
+                                                                           NULL,
+                                                                           batchedPayload.length,
+                                                                           kCFAllocatorDefault,
+                                                                           NULL,
+                                                                           0,
+                                                                           batchedPayload.length,
+                                                                           0,
+                                                                           &batchedBlockBuffer);
+                if (blockStatus == kCMBlockBufferNoErr)
+                {
+                    blockStatus = CMBlockBufferReplaceDataBytes(batchedPayload.bytes,
+                                                                batchedBlockBuffer,
+                                                                0,
+                                                                batchedPayload.length);
+                }
+
+                if (blockStatus == kCMBlockBufferNoErr)
+                {
+                    CMSampleTimingInfo *timings = calloc((size_t)collected, sizeof(CMSampleTimingInfo));
+                    size_t *sizes = calloc((size_t)collected, sizeof(size_t));
+                    if (timings != NULL && sizes != NULL)
+                    {
+                        for (int i = 0; i < collected; i++)
+                        {
+                            CMSampleTimingInfo timing;
+                            [timingValues[(NSUInteger)i] getValue:&timing];
+                            timings[i] = timing;
+                            sizes[i] = (size_t)sampleSizes[(NSUInteger)i].unsignedLongLongValue;
+                        }
+
+                        OSStatus sampleStatus = CMSampleBufferCreateReady(kCFAllocatorDefault,
+                                                                          batchedBlockBuffer,
+                                                                          self.currentSampleFormatDescription,
+                                                                          collected,
+                                                                          collected,
+                                                                          timings,
+                                                                          collected,
+                                                                          sizes,
+                                                                          &batchedSampleBuffer);
+                        if (sampleStatus == noErr && batchedSampleBuffer != NULL)
+                        {
+                            CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(batchedSampleBuffer, true);
+                            if (attachments != NULL)
+                            {
+                                CFIndex attachmentCount = CFArrayGetCount(attachments);
+                                for (CFIndex i = 0; i < attachmentCount && i < (CFIndex)sampleIsKeyframe.count; i++)
+                                {
+                                    CFMutableDictionaryRef dict = (CFMutableDictionaryRef)CFArrayGetValueAtIndex(attachments, i);
+                                    BOOL keyframe = sampleIsKeyframe[(NSUInteger)i].boolValue;
+                                    if (keyframe)
+                                    {
+                                        CFDictionaryRemoveValue(dict, kCMSampleAttachmentKey_NotSync);
+                                        CFDictionarySetValue(dict, kCMSampleAttachmentKey_DependsOnOthers, kCFBooleanFalse);
+                                    }
+                                    else
+                                    {
+                                        CFDictionarySetValue(dict, kCMSampleAttachmentKey_NotSync, kCFBooleanTrue);
+                                        CFDictionarySetValue(dict, kCMSampleAttachmentKey_DependsOnOthers, kCFBooleanTrue);
+                                    }
+                                }
+                            }
+
+                            NSLog(@"[LibAVSampleCursor %p %@] loadSampleBuffer batched count=%d startPTS=%@ endPTS=%@",
+                                  self,
+                                  [self debugTracePrefix],
+                                  collected,
+                                  LibAVTimeString(self.presentationTimeStamp),
+                                  LibAVTimeString(batchCursor.presentationTimeStamp));
+                            completionHandler(batchedSampleBuffer, nil);
+                            self.lastDeliveredDecodeTimeStamp = self.decodeTimeStamp;
+                            CFRelease(batchedBlockBuffer);
+                            free(timings);
+                            free(sizes);
+                            return;
+                        }
+                        free(timings);
+                        free(sizes);
+                    }
+                }
+
+                if (batchedBlockBuffer != NULL)
+                {
+                    CFRelease(batchedBlockBuffer);
+                }
+            }
         }
     }
 
@@ -1591,74 +1757,22 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
     NSData *convertedData = nil;
     BOOL emittedAVCC = NO;
 
-    if (self.trackReader != nil &&
-        self.trackReader->stream != NULL &&
-        self.trackReader->stream->codecpar != NULL &&
-        self.trackReader->stream->codecpar->codec_id == AV_CODEC_ID_H264)
+    if (self.packetFormatter != nil)
     {
-        int lengthFieldSize = [self h264NALLengthFieldSize];
-        BOOL validConfiguredAVCC = [self h264LooksLikeAVCCData:packetBytes
-                                                          size:packetSize
-                                               lengthFieldSize:lengthFieldSize];
-        BOOL hasAnnexB = LibAVBufferHasAnnexBStartCode(packetBytes, packetSize);
-        int detectedLengthFieldSize = [self h264DetectAVCCLengthFieldSize:packetBytes size:packetSize];
-
-        // Important: check configured AVCC first. A 4-byte AVCC length prefix can begin with
-        // 00 00 01 xx, which is byte-identical to an Annex-B start code at packet start.
-        // Misclassifying those packets as Annex-B corrupts NAL headers (e.g. types 26/16/0).
-        if (validConfiguredAVCC)
+        NSString *normalizationNote = nil;
+        convertedData = [self.packetFormatter normalizedPacketDataForBytes:packetBytes
+                                                                      size:packetSize
+                                                               emittedAVCC:&emittedAVCC
+                                                         normalizationNote:&normalizationNote];
+        if (normalizationNote.length > 0)
         {
-            emittedAVCC = YES;
-        }
-        else if (hasAnnexB)
-        {
-            convertedData = [self h264ConvertAnnexBToAVCCData:packetBytes size:packetSize];
-        }
-        else if (detectedLengthFieldSize > 0)
-        {
-            if (detectedLengthFieldSize == lengthFieldSize)
-            {
-                emittedAVCC = YES;
-            }
-            else
-            {
-                convertedData = [self h264RepackAVCCData:packetBytes
-                                                    size:packetSize
-                                  sourceLengthFieldSize:detectedLengthFieldSize
-                               destinationLengthFieldSize:lengthFieldSize];
-                if (convertedData != nil)
-                {
-                    NSLog(@"[LibAVSampleCursor %p %@] normalized AVCC length field size %d -> %d packetSize=%zu",
-                          self,
-                          [self debugTracePrefix],
-                          detectedLengthFieldSize,
-                          lengthFieldSize,
-                          packetSize);
-                }
-            }
-        }
-        else
-        {
-            // Last resort: preserve payload while enforcing a single AVCC contract.
-            convertedData = [self h264WrapSingleNALAsAVCCData:packetBytes size:packetSize lengthFieldSize:lengthFieldSize];
-            if (convertedData != nil)
-            {
-                NSLog(@"[LibAVSampleCursor %p %@] normalized non-annexb/non-avcc h264 packet to single-nal AVCC size=%zu",
-                      self,
-                      [self debugTracePrefix],
-                      packetSize);
-            }
+            NSLog(@"[LibAVSampleCursor %p %@] %@", self, [self debugTracePrefix], normalizationNote);
         }
 
         if (convertedData != nil && convertedData.length > 0)
         {
             packetBytes = convertedData.bytes;
             packetSize = convertedData.length;
-            emittedAVCC = YES;
-        }
-        else if (detectedLengthFieldSize > 0)
-        {
-            emittedAVCC = YES;
         }
     }
 
@@ -1752,416 +1866,6 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
     return sampleBuffer;
 }
 
-- (int)h264NALLengthFieldSize
-{
-    if (self.trackReader == nil || self.trackReader->stream == NULL || self.trackReader->stream->codecpar == NULL)
-    {
-        return 4;
-    }
-
-    const AVCodecParameters *codecpar = self.trackReader->stream->codecpar;
-    if (codecpar->extradata != NULL && codecpar->extradata_size >= 5 && codecpar->extradata[0] == 1)
-    {
-        int lengthSize = (codecpar->extradata[4] & 0x03) + 1;
-        // AVCDecoderConfigurationRecord allows only 1, 2, or 4-byte NAL length fields.
-        if (lengthSize == 1 || lengthSize == 2 || lengthSize == 4)
-        {
-            return lengthSize;
-        }
-        NSLog(@"[LibAVSampleCursor %p %@] invalid avcC length field size=%d; defaulting to 4",
-              self,
-              [self debugTracePrefix],
-              lengthSize);
-    }
-
-    return 4;
-}
-
-- (NSData * _Nullable)h264ConvertAnnexBToAVCCData:(const uint8_t *)bytes size:(size_t)size
-{
-    if (bytes == NULL || size == 0)
-    {
-        return nil;
-    }
-
-    int lengthFieldSize = [self h264NALLengthFieldSize];
-    NSMutableData *output = [NSMutableData dataWithCapacity:size];
-
-    size_t cursor = 0;
-    while (cursor + 3 < size)
-    {
-        size_t start = SIZE_MAX;
-        size_t startCodeSize = 0;
-
-        for (size_t i = cursor; i + 3 < size; i++)
-        {
-            if (bytes[i] == 0x00 && bytes[i + 1] == 0x00)
-            {
-                if (bytes[i + 2] == 0x01)
-                {
-                    start = i;
-                    startCodeSize = 3;
-                    break;
-                }
-                if ((i + 3 < size) && bytes[i + 2] == 0x00 && bytes[i + 3] == 0x01)
-                {
-                    start = i;
-                    startCodeSize = 4;
-                    break;
-                }
-            }
-        }
-
-        if (start == SIZE_MAX)
-        {
-            break;
-        }
-
-        size_t nalStart = start + startCodeSize;
-        size_t nextStart = size;
-        for (size_t i = nalStart; i + 3 < size; i++)
-        {
-            if (bytes[i] == 0x00 && bytes[i + 1] == 0x00 &&
-                (bytes[i + 2] == 0x01 || ((i + 3 < size) && bytes[i + 2] == 0x00 && bytes[i + 3] == 0x01)))
-            {
-                nextStart = i;
-                break;
-            }
-        }
-
-        size_t nalSize = (nextStart > nalStart) ? (nextStart - nalStart) : 0;
-        if (nalSize > 0)
-        {
-            uint8_t lengthPrefix[4] = {0, 0, 0, 0};
-            switch (lengthFieldSize)
-            {
-                case 1:
-                    if (nalSize > UINT8_MAX) { return nil; }
-                    lengthPrefix[0] = (uint8_t)nalSize;
-                    break;
-                case 2:
-                    if (nalSize > UINT16_MAX) { return nil; }
-                    lengthPrefix[0] = (uint8_t)((nalSize >> 8) & 0xFF);
-                    lengthPrefix[1] = (uint8_t)(nalSize & 0xFF);
-                    break;
-                case 3:
-                    if (nalSize > 0xFFFFFF) { return nil; }
-                    lengthPrefix[0] = (uint8_t)((nalSize >> 16) & 0xFF);
-                    lengthPrefix[1] = (uint8_t)((nalSize >> 8) & 0xFF);
-                    lengthPrefix[2] = (uint8_t)(nalSize & 0xFF);
-                    break;
-                default:
-                    if (nalSize > UINT32_MAX) { return nil; }
-                    lengthPrefix[0] = (uint8_t)((nalSize >> 24) & 0xFF);
-                    lengthPrefix[1] = (uint8_t)((nalSize >> 16) & 0xFF);
-                    lengthPrefix[2] = (uint8_t)((nalSize >> 8) & 0xFF);
-                    lengthPrefix[3] = (uint8_t)(nalSize & 0xFF);
-                    break;
-            }
-
-            [output appendBytes:lengthPrefix length:(NSUInteger)lengthFieldSize];
-            [output appendBytes:(bytes + nalStart) length:nalSize];
-        }
-
-        if (nextStart <= cursor)
-        {
-            break;
-        }
-        cursor = nextStart;
-    }
-
-    return (output.length > 0) ? output : nil;
-}
-
-- (BOOL)h264LooksLikeAVCCData:(const uint8_t *)bytes
-                         size:(size_t)size
-              lengthFieldSize:(int)lengthFieldSize
-{
-    if (bytes == NULL || size == 0 || !(lengthFieldSize == 1 || lengthFieldSize == 2 || lengthFieldSize == 4))
-    {
-        return NO;
-    }
-
-    size_t cursor = 0;
-    int nalCount = 0;
-    while (cursor + (size_t)lengthFieldSize <= size)
-    {
-        uint32_t nalLen = 0;
-        for (int i = 0; i < lengthFieldSize; i++)
-        {
-            nalLen = (nalLen << 8) | bytes[cursor + (size_t)i];
-        }
-        cursor += (size_t)lengthFieldSize;
-        if (nalLen == 0 || cursor + nalLen > size)
-        {
-            return NO;
-        }
-        nalCount += 1;
-        cursor += nalLen;
-    }
-
-    return (nalCount > 0 && cursor == size);
-}
-
-- (int)h264DetectAVCCLengthFieldSize:(const uint8_t *)bytes
-                                size:(size_t)size
-{
-    int bestCandidate = 0;
-    int bestScore = INT_MIN;
-
-    for (int candidate = 1; candidate <= 4; candidate++)
-    {
-        if (![self h264LooksLikeAVCCData:bytes size:size lengthFieldSize:candidate])
-        {
-            continue;
-        }
-
-        size_t cursor = 0;
-        int nalCount = 0;
-        int validNalCount = 0;
-        int commonNalCount = 0;
-        int invalidNalCount = 0;
-
-        while (cursor + (size_t)candidate <= size)
-        {
-            uint32_t nalLen = 0;
-            for (int i = 0; i < candidate; i++)
-            {
-                nalLen = (nalLen << 8) | bytes[cursor + (size_t)i];
-            }
-            cursor += (size_t)candidate;
-            if (nalLen == 0 || cursor + nalLen > size)
-            {
-                invalidNalCount += 1;
-                break;
-            }
-
-            uint8_t nalType = bytes[cursor] & 0x1F;
-            nalCount += 1;
-            if (nalType >= 1 && nalType <= 23)
-            {
-                validNalCount += 1;
-                if (nalType == 1 || nalType == 5 || nalType == 6 || nalType == 7 || nalType == 8 || nalType == 9)
-                {
-                    commonNalCount += 1;
-                }
-            }
-            else
-            {
-                invalidNalCount += 1;
-            }
-
-            cursor += nalLen;
-        }
-
-        if (cursor != size || nalCount == 0)
-        {
-            continue;
-        }
-
-        // Prefer candidates that decode to plausible H.264 NAL unit types.
-        int score = (commonNalCount * 8) + (validNalCount * 3) - (invalidNalCount * 20) + nalCount;
-        if (score > bestScore)
-        {
-            bestScore = score;
-            bestCandidate = candidate;
-        }
-    }
-
-    if (bestCandidate > 0 && bestScore > -10)
-    {
-        return bestCandidate;
-    }
-
-    return 0;
-}
-
-- (NSData * _Nullable)h264RepackAVCCData:(const uint8_t *)bytes
-                                     size:(size_t)size
-                       sourceLengthFieldSize:(int)sourceLengthFieldSize
-                    destinationLengthFieldSize:(int)destinationLengthFieldSize
-{
-    if (bytes == NULL || size == 0 ||
-        !(sourceLengthFieldSize == 1 || sourceLengthFieldSize == 2 || sourceLengthFieldSize == 4) ||
-        !(destinationLengthFieldSize == 1 || destinationLengthFieldSize == 2 || destinationLengthFieldSize == 4))
-    {
-        return nil;
-    }
-
-    NSMutableData *output = [NSMutableData dataWithCapacity:size + 64];
-    size_t cursor = 0;
-
-    while (cursor + (size_t)sourceLengthFieldSize <= size)
-    {
-        uint32_t nalLen = 0;
-        for (int i = 0; i < sourceLengthFieldSize; i++)
-        {
-            nalLen = (nalLen << 8) | bytes[cursor + (size_t)i];
-        }
-        cursor += (size_t)sourceLengthFieldSize;
-
-        if (nalLen == 0 || cursor + nalLen > size)
-        {
-            return nil;
-        }
-
-        if ((destinationLengthFieldSize == 1 && nalLen > UINT8_MAX) ||
-            (destinationLengthFieldSize == 2 && nalLen > UINT16_MAX))
-        {
-            return nil;
-        }
-
-        uint8_t prefix[4] = {0, 0, 0, 0};
-        switch (destinationLengthFieldSize)
-        {
-            case 1:
-                prefix[0] = (uint8_t)nalLen;
-                break;
-            case 2:
-                prefix[0] = (uint8_t)((nalLen >> 8) & 0xFF);
-                prefix[1] = (uint8_t)(nalLen & 0xFF);
-                break;
-            default:
-                prefix[0] = (uint8_t)((nalLen >> 24) & 0xFF);
-                prefix[1] = (uint8_t)((nalLen >> 16) & 0xFF);
-                prefix[2] = (uint8_t)((nalLen >> 8) & 0xFF);
-                prefix[3] = (uint8_t)(nalLen & 0xFF);
-                break;
-        }
-
-        [output appendBytes:prefix length:(NSUInteger)destinationLengthFieldSize];
-        [output appendBytes:(bytes + cursor) length:nalLen];
-        cursor += nalLen;
-    }
-
-    if (cursor != size || output.length == 0)
-    {
-        return nil;
-    }
-
-    return output;
-}
-
-- (NSData * _Nullable)h264WrapSingleNALAsAVCCData:(const uint8_t *)bytes
-                                             size:(size_t)size
-                                  lengthFieldSize:(int)lengthFieldSize
-{
-    if (bytes == NULL || size == 0 || !(lengthFieldSize == 1 || lengthFieldSize == 2 || lengthFieldSize == 4))
-    {
-        return nil;
-    }
-
-    if ((lengthFieldSize == 1 && size > UINT8_MAX) ||
-        (lengthFieldSize == 2 && size > UINT16_MAX) ||
-        (lengthFieldSize == 4 && size > UINT32_MAX))
-    {
-        return nil;
-    }
-
-    NSMutableData *output = [NSMutableData dataWithCapacity:size + (NSUInteger)lengthFieldSize];
-    uint8_t lengthPrefix[4] = {0, 0, 0, 0};
-    switch (lengthFieldSize)
-    {
-        case 1:
-            lengthPrefix[0] = (uint8_t)size;
-            break;
-        case 2:
-            lengthPrefix[0] = (uint8_t)((size >> 8) & 0xFF);
-            lengthPrefix[1] = (uint8_t)(size & 0xFF);
-            break;
-        default:
-            lengthPrefix[0] = (uint8_t)((size >> 24) & 0xFF);
-            lengthPrefix[1] = (uint8_t)((size >> 16) & 0xFF);
-            lengthPrefix[2] = (uint8_t)((size >> 8) & 0xFF);
-            lengthPrefix[3] = (uint8_t)(size & 0xFF);
-            break;
-    }
-
-    [output appendBytes:lengthPrefix length:(NSUInteger)lengthFieldSize];
-    [output appendBytes:bytes length:size];
-    return output;
-}
-
-- (NSString *)h264AuditSummaryForBytes:(const uint8_t *)bytes
-                                  size:(size_t)size
-                              isAVCC:(BOOL)isAVCC
-{
-    if (bytes == NULL || size == 0)
-    {
-        return @"nal=none";
-    }
-
-    int counts[32] = {0};
-    int nalCount = 0;
-    BOOL sawIDR = NO;
-
-    if (isAVCC)
-    {
-        int lengthFieldSize = [self h264NALLengthFieldSize];
-        size_t cursor = 0;
-        while (cursor + (size_t)lengthFieldSize <= size)
-        {
-            uint32_t nalLen = 0;
-            for (int i = 0; i < lengthFieldSize; i++)
-            {
-                nalLen = (nalLen << 8) | bytes[cursor + (size_t)i];
-            }
-            cursor += (size_t)lengthFieldSize;
-            if (nalLen == 0 || cursor + nalLen > size)
-            {
-                break;
-            }
-
-            uint8_t nalType = bytes[cursor] & 0x1F;
-            if (nalType < 32) counts[nalType] += 1;
-            sawIDR = sawIDR || (nalType == 5);
-            nalCount += 1;
-            cursor += nalLen;
-        }
-    }
-    else
-    {
-        size_t i = 0;
-        while (i + 3 < size)
-        {
-            size_t start = SIZE_MAX;
-            size_t startCodeSize = 0;
-            for (; i + 3 < size; i++)
-            {
-                if (bytes[i] == 0x00 && bytes[i + 1] == 0x00 &&
-                    (bytes[i + 2] == 0x01 || ((i + 3 < size) && bytes[i + 2] == 0x00 && bytes[i + 3] == 0x01)))
-                {
-                    start = i;
-                    startCodeSize = (bytes[i + 2] == 0x01) ? 3 : 4;
-                    break;
-                }
-            }
-            if (start == SIZE_MAX)
-            {
-                break;
-            }
-            size_t nalStart = start + startCodeSize;
-            if (nalStart >= size) break;
-            uint8_t nalType = bytes[nalStart] & 0x1F;
-            if (nalType < 32) counts[nalType] += 1;
-            sawIDR = sawIDR || (nalType == 5);
-            nalCount += 1;
-            i = nalStart + 1;
-        }
-    }
-
-    NSMutableArray<NSString *> *types = [NSMutableArray array];
-    for (int t = 0; t < 32; t++)
-    {
-        if (counts[t] > 0)
-        {
-            [types addObject:[NSString stringWithFormat:@"%d:%d", t, counts[t]]];
-        }
-    }
-    NSString *joined = (types.count > 0) ? [types componentsJoinedByString:@","] : @"none";
-    return [NSString stringWithFormat:@"nalCount=%d idr=%d types=[%@]", nalCount, sawIDR ? 1 : 0, joined];
-}
-
 - (void)logSampleAuditForPacket:(const AVPacket *)packet
                    sampleBuffer:(CMSampleBufferRef)sampleBuffer
                     sampleBytes:(const uint8_t *)sampleBytes
@@ -2187,14 +1891,10 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
         dependsOnOthers = (dependsValue == kCFBooleanTrue);
     }
 
-    NSString *h264Summary = @"codec=non-h264";
-    if (self.trackReader != nil &&
-        self.trackReader->stream != NULL &&
-        self.trackReader->stream->codecpar != NULL &&
-        self.trackReader->stream->codecpar->codec_id == AV_CODEC_ID_H264 &&
-        sampleBytes != NULL && packetSize > 0)
+    NSString *codecSummary = @"codec=passthrough";
+    if (self.packetFormatter != nil && sampleBytes != NULL && packetSize > 0)
     {
-        h264Summary = [self h264AuditSummaryForBytes:sampleBytes size:packetSize isAVCC:isAVCC];
+        codecSummary = [self.packetFormatter auditSummaryForBytes:sampleBytes size:packetSize emittedAVCC:isAVCC];
     }
 
     int64_t globalIdx = 0;
@@ -2216,7 +1916,7 @@ static int64_t libavCursorSeek(void *opaque, int64_t offset, int whence)
           dependsOnOthers ? 1 : 0,
           packetSize,
           isAVCC ? "avcc" : "native",
-          h264Summary);
+          codecSummary);
 }
 
 #pragma mark - Dependency extraction

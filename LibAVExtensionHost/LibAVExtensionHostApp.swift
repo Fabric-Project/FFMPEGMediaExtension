@@ -23,7 +23,7 @@ struct LibAVExtensionHostApp: App
 //        let url = URL(filePath:"/Users/vade/test.mkv")
         
         // All Key Frames
-        let url = URL(filePath:"/Users/vade/Documents/Repositories/Fabric/FFMPEGMediaExtension/scripts/TestMedia/baseline_1920_1080_30fps_h264_aac.mkv")
+        let url = URL(filePath:"/Users/vade/Documents/Repositories/Fabric/FFMPEGMediaExtension/scripts/TestMedia/baseline_1920_1080_30fps_h264_alli_aac.mkv")
                 
         self.asset = AVURLAsset(url: url,  options: [AVURLAssetPreferPreciseDurationAndTimingKey : true])
         
