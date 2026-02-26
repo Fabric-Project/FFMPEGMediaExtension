@@ -52,6 +52,17 @@
                ReferencedContainer = "container:LibAVExtensionHost.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "1B7226E12F4E3BBB00BAFC49"
+               BuildableName = "LibAVExtensionIntegrationTests.xctest"
+               BlueprintName = "LibAVExtensionIntegrationTests"
+               ReferencedContainer = "container:LibAVExtensionHost.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

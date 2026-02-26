@@ -10,11 +10,15 @@ import AVKit
 
 struct ContentView: View {
     let asset:AVAsset
+    private let isRunningTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     
     var body: some View {
         VStack {
-            
-            VideoPlayer(player: AVPlayer(playerItem: AVPlayerItem(asset: self.asset)))
+            if isRunningTests {
+                Text("Test mode: UI player disabled")
+            } else {
+                VideoPlayer(player: AVPlayer(playerItem: AVPlayerItem(asset: self.asset)))
+            }
             
             Image(systemName: "globe")
                 .imageScale(.large)
@@ -26,5 +30,5 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView(asset: AVURLAsset(url: URL(filePath: "/Users/vade/SceneEditTest-Fixed-Frame-Numbers.m4v"), options: [AVURLAssetPreferPreciseDurationAndTimingKey : true] ) )
+    ContentView(asset: AVURLAsset(url: URL(filePath: "/Users/vade/Documents/Repositories/Fabric/FFMPEGMediaExtension/scripts/TestMedia/baseline_1920_1080_30fps_h264_aac.mkv"), options: [AVURLAssetPreferPreciseDurationAndTimingKey : true] ) )
 }
