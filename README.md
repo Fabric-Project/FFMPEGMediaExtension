@@ -10,7 +10,7 @@ Since Media Extensions are shipped in a host app, this has also provides a Host 
 
 We have h264 GOP decode from an MKV container working! 
 
-<video src="https://github.com/user-attachments/assets/4cdaf21f-120c-4793-8453-4dd9b4810916">
+<video src="https://github.com/user-attachments/assets/4cdaf21f-120c-4793-8453-4dd9b4810916" /></video>
 
 
 But there is a ton left to do!
